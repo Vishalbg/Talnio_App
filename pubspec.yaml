@@ -1,0 +1,48 @@
+name: Talnio
+description: A Flutter app for employee attendance and task management
+version: 1.0.0
+environment:
+  sdk: ">=2.12.0 <3.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  cloud_firestore: ^5.4.3
+  geolocator: ^12.0.0
+  provider: ^6.1.2
+  uuid: ^4.5.0
+  google_fonts: ^6.1.0
+  lottie: ^2.3.0
+  mailer: ^6.0.0
+  rename_app: ^1.6.3
+  intl: ^0.19.0
+  excel: ^4.0.3
+  path_provider: ^2.1.1
+  permission_handler: ^11.0.1
+  share_plus: ^7.2.1
+  device_info_plus: ^9.1.0
+  flutter_native_splash: ^2.3.5
+  pdf: ^3.10.8
+  nfc_manager: ^3.2.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/checkin_animation.json
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/logo/Talnio.png"
+  min_sdk_android: 21
+
+flutter_native_splash:
+  color: "#ffffff"
+  image: assets/logo/Talnio_splash.png
+  android: true
+  ios: true
+  duration: 3000

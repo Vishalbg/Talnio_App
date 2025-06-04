@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "734059529982",
+    "project_id": "talnio-50dd4",
+    "storage_bucket": "talnio-50dd4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:734059529982:android:f013dfe2d9beeeaba247af",
+        "android_client_info": {
+          "package_name": "com.talnio.talnio"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA9LCpLqRzspyYPkMaDTJlpKC0lyY482IY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
