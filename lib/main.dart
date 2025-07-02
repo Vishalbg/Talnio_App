@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:provider/provider.dart';
+import 'package:geolocator/geolocator.dart';
 import 'auth_provider.dart';
 import 'home_screen.dart';
 import 'theme.dart';
 import 'forgot_password_screen.dart';
-import 'notification_scheduler.dart'; // Add this import
+import 'notification_scheduler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,13 +29,267 @@ class MyApp extends StatelessWidget {
         theme: appTheme(),
         home: Consumer<AuthProvider>(
           builder: (context, auth, _) =>
-          auth.isAuthenticated ? HomeScreen() : LoginScreen(),
+          auth.isAuthenticated ? PermissionWrapper() : LoginScreen(),
         ),
       ),
     );
   }
 }
 
+// Permission wrapper remains the same
+class PermissionWrapper extends StatefulWidget {
+  @override
+  _PermissionWrapperState createState() => _PermissionWrapperState();
+}
+
+class _PermissionWrapperState extends State<PermissionWrapper> {
+  bool _isCheckingPermissions = true;
+  bool _permissionsGranted = false;
+  String _permissionStatus = 'Checking permissions...';
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAndRequestPermissions();
+  }
+
+  Future<void> _checkAndRequestPermissions() async {
+    try {
+      setState(() {
+        _permissionStatus = 'Checking location services...';
+      });
+
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          _permissionStatus = 'Location services are disabled. Please enable them in settings.';
+          _isCheckingPermissions = false;
+        });
+        return;
+      }
+
+      setState(() {
+        _permissionStatus = 'Checking location permissions...';
+      });
+
+      LocationPermission permission = await Geolocator.checkPermission();
+
+      if (permission == LocationPermission.denied) {
+        setState(() {
+          _permissionStatus = 'Requesting location permission...';
+        });
+
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() {
+            _permissionStatus = 'Location permission denied. Please grant permission to use attendance features.';
+            _isCheckingPermissions = false;
+          });
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        setState(() {
+          _permissionStatus = 'Location permissions are permanently denied. Please enable them in app settings.';
+          _isCheckingPermissions = false;
+        });
+        return;
+      }
+
+      setState(() {
+        _permissionStatus = 'Testing location access...';
+      });
+
+      try {
+        await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.best,
+          timeLimit: Duration(seconds: 10),
+        );
+
+        setState(() {
+          _permissionsGranted = true;
+          _isCheckingPermissions = false;
+          _permissionStatus = 'All permissions granted!';
+        });
+      } catch (e) {
+        setState(() {
+          _permissionStatus = 'Failed to access location: ${e.toString()}';
+          _isCheckingPermissions = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _permissionStatus = 'Error checking permissions: ${e.toString()}';
+        _isCheckingPermissions = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_permissionsGranted) {
+      return HomeScreen();
+    }
+
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Theme.of(context).primaryColor.withOpacity(0.1),
+              Theme.of(context).primaryColor.withOpacity(0.05),
+              Colors.white,
+              Colors.blue.shade50.withOpacity(0.3),
+            ],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    height: 100,
+                    width: 100,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Theme.of(context).primaryColor,
+                          Theme.of(context).primaryColor.withOpacity(0.8),
+                        ],
+                      ),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Theme.of(context).primaryColor.withOpacity(0.3),
+                          blurRadius: 20,
+                          offset: Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Icon(
+                      Icons.location_on,
+                      size: 50,
+                      color: Colors.white,
+                    ),
+                  ),
+                  SizedBox(height: 40),
+                  Text(
+                    'Setting Up Permissions',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey[800],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'We need location access to track your attendance accurately',
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: Colors.grey[600],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 40),
+                  if (_isCheckingPermissions) ...[
+                    CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        Theme.of(context).primaryColor,
+                      ),
+                    ),
+                    SizedBox(height: 20),
+                  ],
+                  Container(
+                    padding: EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: _permissionsGranted
+                          ? Colors.green.shade50
+                          : _isCheckingPermissions
+                          ? Colors.blue.shade50
+                          : Colors.orange.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _permissionsGranted
+                            ? Colors.green.shade200
+                            : _isCheckingPermissions
+                            ? Colors.blue.shade200
+                            : Colors.orange.shade200,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _permissionsGranted
+                              ? Icons.check_circle
+                              : _isCheckingPermissions
+                              ? Icons.info_outline
+                              : Icons.warning_amber,
+                          color: _permissionsGranted
+                              ? Colors.green.shade600
+                              : _isCheckingPermissions
+                              ? Colors.blue.shade600
+                              : Colors.orange.shade600,
+                        ),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            _permissionStatus,
+                            style: TextStyle(
+                              color: _permissionsGranted
+                                  ? Colors.green.shade700
+                                  : _isCheckingPermissions
+                                  ? Colors.blue.shade700
+                                  : Colors.orange.shade700,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!_isCheckingPermissions && !_permissionsGranted) ...[
+                    SizedBox(height: 30),
+                    ElevatedButton.icon(
+                      onPressed: _checkAndRequestPermissions,
+                      icon: Icon(Icons.refresh),
+                      label: Text('Retry'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Theme.of(context).primaryColor,
+                        foregroundColor: Colors.white,
+                        padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    TextButton.icon(
+                      onPressed: () {
+                        Geolocator.openAppSettings();
+                      },
+                      icon: Icon(Icons.settings),
+                      label: Text('Open Settings'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Theme.of(context).primaryColor,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Updated LoginScreen with inline error display
 class LoginScreen extends StatefulWidget {
   @override
   _LoginScreenState createState() => _LoginScreenState();
@@ -46,6 +301,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
   final _formKey = GlobalKey<FormState>();
   bool _isPasswordVisible = false;
   bool _isLoading = false;
+  String? _errorMessage; // Added for inline error display
 
   late AnimationController _animationController;
   late AnimationController _pulseController;
@@ -61,19 +317,16 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
   void initState() {
     super.initState();
 
-    // Main animation controller
     _animationController = AnimationController(
       duration: Duration(milliseconds: 1200),
       vsync: this,
     );
 
-    // Pulse animation for logo
     _pulseController = AnimationController(
       duration: Duration(milliseconds: 2000),
       vsync: this,
     );
 
-    // Floating animation for background elements
     _floatingController = AnimationController(
       duration: Duration(milliseconds: 3000),
       vsync: this,
@@ -137,7 +390,10 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
 
   Future<void> _handleLogin() async {
     if (_formKey.currentState!.validate()) {
-      setState(() => _isLoading = true);
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null; // Clear any previous error
+      });
 
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
 
@@ -146,23 +402,17 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
           emailController.text.trim(),
           passwordController.text,
           context,
+          onError: (String errorMessage) {
+            // Handle error inline instead of SnackBar
+            setState(() {
+              _errorMessage = errorMessage;
+            });
+          },
         );
       } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.error_outline, color: Colors.white),
-                SizedBox(width: 12),
-                Expanded(child: Text('Login failed. Please try again.')),
-              ],
-            ),
-            backgroundColor: Colors.red.shade600,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            margin: EdgeInsets.all(16),
-          ),
-        );
+        setState(() {
+          _errorMessage = 'Login failed. Please try again.';
+        });
       } finally {
         if (mounted) {
           setState(() => _isLoading = false);
@@ -488,6 +738,39 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
                                     ),
                                   ),
                                 ),
+
+                                // Inline Error Message Display - Similar to Add Employee Screen
+                                if (_errorMessage != null) ...[
+                                  SizedBox(height: 16),
+                                  Container(
+                                    padding: EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red[50],
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: Colors.red[200]!),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.error_outline,
+                                          color: Colors.red[600],
+                                          size: 20,
+                                        ),
+                                        SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            _errorMessage!,
+                                            style: TextStyle(
+                                              color: Colors.red[600],
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
 
                                 SizedBox(height: 32),
 

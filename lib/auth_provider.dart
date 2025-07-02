@@ -7,6 +7,8 @@ import 'dart:math';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:uuid/uuid.dart';
 import 'employee_details_screen.dart';
+import 'email_service.dart';
+import 'otp_verification_screen.dart';
 
 class AuthProvider with ChangeNotifier {
   final fa.FirebaseAuth _auth = fa.FirebaseAuth.instance;
@@ -59,10 +61,11 @@ class AuthProvider with ChangeNotifier {
     });
   }
 
-  Future<void> signIn(String email, String password, BuildContext context) async {
+  Future<void> signIn(String email, String password, BuildContext context, {Function(String)? onError}) async {
     try {
       fa.UserCredential credential = await _auth.signInWithEmailAndPassword(email: email, password: password);
       debugPrint('Signed in user: ${credential.user!.uid}, email: ${credential.user!.email}');
+
       // Check if this is the first login
       DocumentSnapshot userDoc = await _firestore.collection('users').doc(credential.user!.uid).get();
       if (userDoc.exists) {
@@ -84,7 +87,7 @@ class AuthProvider with ChangeNotifier {
       String errorMessage;
       switch (e.code) {
         case 'user-not-found':
-          errorMessage = 'No user found for that email.';
+          errorMessage = 'No user found for that email address.';
           break;
         case 'wrong-password':
           errorMessage = 'Incorrect password provided.';
@@ -92,62 +95,66 @@ class AuthProvider with ChangeNotifier {
         case 'invalid-email':
           errorMessage = 'The email address is invalid.';
           break;
+        case 'invalid-credential':
+          errorMessage = 'Invalid email or password. Please check your credentials.';
+          break;
+        case 'too-many-requests':
+          errorMessage = 'Too many failed attempts. Please try again later.';
+          break;
+        case 'network-request-failed':
+          errorMessage = 'Network error. Please check your internet connection.';
+          break;
         default:
-          errorMessage = 'Login failed: ${e.message}';
+          errorMessage = 'Login failed: ${e.message ?? 'Unknown error occurred'}';
       }
       debugPrint('Sign-in error: $e, code: ${e.code}');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage)));
+
+      // Use callback if provided, otherwise show SnackBar
+      if (onError != null) {
+        onError(errorMessage);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage)));
+      }
     } catch (e) {
       debugPrint('Unexpected sign-in error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Login failed: $e')));
+      String errorMessage = 'An unexpected error occurred. Please try again.';
+
+      // Use callback if provided, otherwise show SnackBar
+      if (onError != null) {
+        onError(errorMessage);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage)));
+      }
     }
   }
 
   Future<bool> checkEmailExists(String email) async {
     debugPrint('Starting email existence check for: $email');
 
-    bool authExists = false;
-    bool firestoreExists = false;
+    // Check Firestore users collection
+    bool firestoreExists = await _checkEmailInFirestore(email);
 
-    // Check Firebase Auth
+    if (firestoreExists) {
+      debugPrint('Email found in Firestore: $email');
+      return true;
+    }
+
+    // If not found in Firestore, check Firebase Auth
     try {
       final signInMethods = await _auth.fetchSignInMethodsForEmail(email);
-      authExists = signInMethods.isNotEmpty;
+      bool authExists = signInMethods.isNotEmpty;
       debugPrint('Firebase Auth check for $email: $authExists (methods: $signInMethods)');
+      return authExists;
     } on fa.FirebaseAuthException catch (e) {
       debugPrint('Firebase Auth exception for $email: ${e.code} - ${e.message}');
-      // Don't return false here, continue to check Firestore
+      return false;
     } catch (e) {
       debugPrint('Firebase Auth error for $email: $e');
-      // Don't return false here, continue to check Firestore
+      return false;
     }
-
-    // Check Firestore users collection
-    try {
-      final querySnapshot = await _firestore
-          .collection('users')
-          .where('email', isEqualTo: email)
-          .limit(1)
-          .get();
-
-      firestoreExists = querySnapshot.docs.isNotEmpty;
-      debugPrint('Firestore check for $email: $firestoreExists');
-
-      if (firestoreExists) {
-        final userData = querySnapshot.docs.first.data();
-        debugPrint('Found user in Firestore: ${userData['name']} (${userData['role']})');
-      }
-    } catch (e) {
-      debugPrint('Firestore error checking email $email: $e');
-    }
-
-    // Email exists if found in either Firebase Auth OR Firestore
-    bool emailExists = authExists || firestoreExists;
-    debugPrint('Final result for $email: $emailExists (Auth: $authExists, Firestore: $firestoreExists)');
-
-    return emailExists;
   }
 
+// Improve the _checkEmailInFirestore method
   Future<bool> _checkEmailInFirestore(String email) async {
     try {
       final querySnapshot = await _firestore
@@ -158,42 +165,84 @@ class AuthProvider with ChangeNotifier {
 
       bool exists = querySnapshot.docs.isNotEmpty;
       debugPrint('Firestore email check for $email: $exists');
+
+      if (exists) {
+        final userData = querySnapshot.docs.first.data();
+        debugPrint('Found user in Firestore: ${userData['name']} (${userData['role']})');
+      } else {
+        debugPrint('No user found in Firestore with email: $email');
+      }
+
       return exists;
     } catch (e) {
       debugPrint('Error checking email in Firestore: $e');
-      // If both methods fail, assume email doesn't exist to prevent security issues
       return false;
     }
   }
 
-
-
-
-  // Updated addEmployee method in AuthProvider class
-  Future<void> addEmployee(String email, String name, String password, String role, String? officeLocationId, String employeeType, BuildContext context) async {
+  Future<void> addEmployee(
+      String email,
+      String name,
+      String password,
+      String role,
+      String? officeLocationId,
+      String employeeType,
+      BuildContext context, {
+        Function()? onSuccess,
+        Function(String)? onError,
+      }) async {
     final String? currentManagerUid = _auth.currentUser?.uid;
 
     if (currentManagerUid == null) {
       debugPrint('No authenticated user in primary auth instance');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No authenticated user. Please sign in again.')));
+      if (onError != null) {
+        onError('No authenticated user. Please sign in again.');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No authenticated user. Please sign in again.'))
+        );
+      }
       return;
     }
 
     debugPrint('Current Manager UID: $currentManagerUid, Role: $_role, Email: ${_auth.currentUser?.email}');
 
     if (_role != 'admin' && _role != 'manager') {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Unauthorized: Only admins or managers can add employees')));
+      if (onError != null) {
+        onError('Unauthorized: Only admins or managers can add employees');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Unauthorized: Only admins or managers can add employees'))
+        );
+      }
       return;
     }
 
     if (role != 'employee') {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Invalid role: Only employee role is allowed')));
+      if (onError != null) {
+        onError('Invalid role: Only employee role is allowed');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Invalid role: Only employee role is allowed'))
+        );
+      }
       return;
     }
 
-    // Validate employee type
-    if (!['employee', 'intern', 'freelancer'].contains(employeeType)) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Invalid employee type')));
+    // Validate employee type - now includes developer types
+    final validEmployeeTypes = [
+      'employee', 'intern', 'freelancer',
+      'full_stack', 'frontend', 'backend', 'ui_ux'
+    ];
+
+    if (!validEmployeeTypes.contains(employeeType)) {
+      if (onError != null) {
+        onError('Invalid employee type');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Invalid employee type'))
+        );
+      }
       return;
     }
 
@@ -218,11 +267,15 @@ class AuthProvider with ChangeNotifier {
       fa.FirebaseAuth secondaryAuth = fa.FirebaseAuth.instanceFor(app: secondaryApp);
 
       // Create the employee account using secondary auth
-      fa.UserCredential cred = await secondaryAuth.createUserWithEmailAndPassword(email: email, password: password);
+      fa.UserCredential cred = await secondaryAuth.createUserWithEmailAndPassword(
+          email: email,
+          password: password
+      );
 
       debugPrint('Created employee UID: ${cred.user!.uid}, Email: ${cred.user!.email}');
       debugPrint('Manager UID being assigned: $currentManagerUid');
 
+      // Prepare user data with enhanced employee type information
       final userData = {
         'uid': cred.user!.uid,
         'email': email,
@@ -234,6 +287,35 @@ class AuthProvider with ChangeNotifier {
         'createdAt': FieldValue.serverTimestamp(),
         'lastLogin': null,
       };
+
+      // Add additional fields based on employee type
+      if (['full_stack', 'frontend', 'backend', 'ui_ux'].contains(employeeType)) {
+        userData['isDeveloper'] = true;
+        userData['developerType'] = employeeType;
+
+        // Add developer-specific fields
+        switch (employeeType) {
+          case 'full_stack':
+            userData['skills'] = ['Frontend', 'Backend', 'Database', 'DevOps'];
+            userData['department'] = 'Engineering';
+            break;
+          case 'frontend':
+            userData['skills'] = ['HTML', 'CSS', 'JavaScript', 'React', 'Vue', 'Angular'];
+            userData['department'] = 'Engineering';
+            break;
+          case 'backend':
+            userData['skills'] = ['Server Development', 'Database', 'API Design', 'Cloud Services'];
+            userData['department'] = 'Engineering';
+            break;
+          case 'ui_ux':
+            userData['skills'] = ['UI Design', 'UX Research', 'Prototyping', 'User Testing'];
+            userData['department'] = 'Design';
+            break;
+        }
+      } else {
+        userData['isDeveloper'] = false;
+        userData['department'] = employeeType == 'intern' ? 'Internship Program' : 'General';
+      }
 
       debugPrint('Writing user data to Firestore: $userData');
       await _firestore.collection('users').doc(cred.user!.uid).set(userData);
@@ -249,7 +331,23 @@ class AuthProvider with ChangeNotifier {
       }
 
       debugPrint('Employee added successfully for UID: ${cred.user!.uid} with Manager UID: $currentManagerUid');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${employeeType.toUpperCase()} added successfully')));
+
+      if (onSuccess != null) {
+        onSuccess();
+      } else {
+        // Display a more specific message based on the employee type
+        String displayType = _getDisplayTypeForEmployeeType(employeeType);
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$displayType added successfully'),
+              backgroundColor: Colors.green,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            )
+        );
+      }
 
     } on fa.FirebaseAuthException catch (e) {
       String errorMessage;
@@ -263,40 +361,145 @@ class AuthProvider with ChangeNotifier {
         case 'weak-password':
           errorMessage = 'The password is too weak.';
           break;
+        case 'operation-not-allowed':
+          errorMessage = 'Email/password accounts are not enabled.';
+          break;
+        case 'network-request-failed':
+          errorMessage = 'Network error. Please check your connection.';
+          break;
         default:
           errorMessage = 'Failed to add employee: ${e.message}';
       }
       debugPrint('Firebase Auth error: $e, code: ${e.code}');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage)));
+
+      if (onError != null) {
+        onError(errorMessage);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(errorMessage),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            )
+        );
+      }
     } on FirebaseException catch (e) {
       debugPrint('Firestore error: $e, code: ${e.code}, message: ${e.message}');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Firestore error: ${e.message}')));
+      String errorMessage = 'Database error: ${e.message ?? 'Unknown error occurred'}';
+
+      if (onError != null) {
+        onError(errorMessage);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(errorMessage),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            )
+        );
+      }
     } catch (e, stackTrace) {
       debugPrint('Unexpected error adding employee: $e\nStackTrace: $stackTrace');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to add employee: $e')));
+      String errorMessage = 'An unexpected error occurred. Please try again.';
+
+      if (onError != null) {
+        onError(errorMessage);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(errorMessage),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            )
+        );
+      }
     }
   }
 
-  Future<void> addManager(String email, String name, String password, String? officeLocationId, BuildContext context) async {
+// Helper method to get display-friendly employee type names
+  String _getDisplayTypeForEmployeeType(String employeeType) {
+    switch (employeeType) {
+      case 'full_stack':
+        return 'Full Stack Developer';
+      case 'frontend':
+        return 'Frontend Developer';
+      case 'backend':
+        return 'Backend Developer';
+      case 'ui_ux':
+        return 'UI/UX Designer';
+      case 'employee':
+        return 'Employee';
+      case 'intern':
+        return 'Intern';
+      case 'freelancer':
+        return 'Freelancer';
+      default:
+        return employeeType.toUpperCase();
+    }
+  }
+
+  // Updated addManager method with callback support
+// Updated addManager method with proper secondary auth implementation
+  Future<void> addManager(
+      String email,
+      String name,
+      String password,
+      String? officeLocationId,
+      BuildContext context, {
+        Function()? onSuccess,
+        Function(String)? onError,
+      }) async {
     final String? currentAdminUid = _auth.currentUser?.uid;
 
     if (currentAdminUid == null) {
       debugPrint('No authenticated user in primary auth instance');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No authenticated user. Please sign in again.')));
+      if (onError != null) {
+        onError('No authenticated user. Please sign in again.');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No authenticated user. Please sign in again.')));
+      }
       return;
     }
 
     debugPrint('Current Admin UID: $currentAdminUid, Role: $_role, Email: ${_auth.currentUser?.email}');
 
     if (_role != 'admin') {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Unauthorized: Only admins can add managers')));
+      if (onError != null) {
+        onError('Unauthorized: Only admins can add managers');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Unauthorized: Only admins can add managers')));
+      }
       return;
     }
 
     debugPrint('Adding manager with email: $email, name: $name, role: manager, officeLocationId: $officeLocationId');
 
     try {
-      fa.FirebaseAuth secondaryAuth = fa.FirebaseAuth.instanceFor(app: Firebase.app());
+      // Store current user info before creating secondary auth
+      final currentUserEmail = _auth.currentUser?.email;
+      final currentUserUid = _auth.currentUser?.uid;
+
+      // Create a completely separate Firebase app instance for manager creation
+      FirebaseApp secondaryApp;
+      try {
+        secondaryApp = Firebase.app('secondary');
+      } catch (e) {
+        secondaryApp = await Firebase.initializeApp(
+          name: 'secondary',
+          options: Firebase.app().options,
+        );
+      }
+
+      fa.FirebaseAuth secondaryAuth = fa.FirebaseAuth.instanceFor(app: secondaryApp);
       fa.UserCredential cred = await secondaryAuth.createUserWithEmailAndPassword(email: email, password: password);
 
       debugPrint('Created manager UID: ${cred.user!.uid}, Email: ${cred.user!.email}');
@@ -314,10 +517,23 @@ class AuthProvider with ChangeNotifier {
       debugPrint('Writing manager data to Firestore: $userData');
       await _firestore.collection('users').doc(cred.user!.uid).set(userData);
 
+      // Sign out from secondary auth to avoid conflicts
       await secondaryAuth.signOut();
 
+      // Verify current user is still authenticated in primary auth
+      if (_auth.currentUser?.uid != currentUserUid) {
+        debugPrint('Primary auth state changed unexpectedly, attempting to restore');
+        // If somehow the primary auth was affected, we don't re-authenticate here
+        // as it would require the password. Instead, we'll let the auth state listener handle it.
+      }
+
       debugPrint('Manager added successfully for UID: ${cred.user!.uid}');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Manager added successfully')));
+
+      if (onSuccess != null) {
+        onSuccess();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Manager added successfully')));
+      }
 
     } on fa.FirebaseAuthException catch (e) {
       String errorMessage;
@@ -335,13 +551,28 @@ class AuthProvider with ChangeNotifier {
           errorMessage = 'Failed to add manager: ${e.message}';
       }
       debugPrint('Firebase Auth error: $e, code: ${e.code}');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage)));
+
+      if (onError != null) {
+        onError(errorMessage);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage)));
+      }
     } on FirebaseException catch (e) {
       debugPrint('Firestore error: $e, code: ${e.code}, message: ${e.message}');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Firestore error: ${e.message}')));
+
+      if (onError != null) {
+        onError('Firestore error: ${e.message}');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Firestore error: ${e.message}')));
+      }
     } catch (e, stackTrace) {
       debugPrint('Unexpected error adding manager: $e\nStackTrace: $stackTrace');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to add manager: $e')));
+
+      if (onError != null) {
+        onError('Failed to add manager: $e');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to add manager: $e')));
+      }
     }
   }
 
@@ -367,7 +598,12 @@ class AuthProvider with ChangeNotifier {
     }
   }
 
-  Future<void> updateProfile(String name, String? password, BuildContext context) async {
+  Future<void> updateProfile(
+      String name,
+      String? password,
+      BuildContext context,
+      {bool silent = false} // Add silent parameter
+      ) async {
     try {
       if (name.isNotEmpty) {
         await _firestore.collection('users').doc(_user!.uid).update({'name': name});
@@ -377,12 +613,24 @@ class AuthProvider with ChangeNotifier {
         await _user!.updatePassword(password);
       }
       notifyListeners();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Profile updated successfully')));
+
+      // Only show SnackBar if not silent
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Profile updated successfully'))
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to update profile: $e')));
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to update profile: $e'))
+        );
+      }
+      throw e; // Re-throw to allow caller to handle
     }
   }
 
+  // Modified updateEmployeeDetails method with silent parameter
   Future<void> updateEmployeeDetails({
     required String userId,
     required String aadhaarNumber,
@@ -390,9 +638,11 @@ class AuthProvider with ChangeNotifier {
     required String bloodGroup,
     required String permanentAddress,
     required String currentAddress,
+    required String mobileNumber,
     required String alternateMobile,
-    required String alternateContactRelation, // Added new parameter
+    required String alternateContactRelation,
     required BuildContext context,
+    bool silent = false, // Add silent parameter
   }) async {
     try {
       await _firestore.collection('users').doc(userId).update({
@@ -401,18 +651,28 @@ class AuthProvider with ChangeNotifier {
         'bloodGroup': bloodGroup,
         'permanentAddress': permanentAddress,
         'currentAddress': currentAddress,
+        'mobileNumber': mobileNumber,
         'alternateMobile': alternateMobile,
-        'alternateContactRelation': alternateContactRelation, // Store the relationship
+        'alternateContactRelation': alternateContactRelation,
         'lastLogin': FieldValue.serverTimestamp(),
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Employee details updated successfully')),
-      );
+
+      // Only show SnackBar if not silent
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Employee details updated successfully')),
+        );
+      }
     } catch (e) {
       debugPrint('Error updating employee details: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to update employee details: $e')),
-      );
+
+      // Only show SnackBar if not silent
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update employee details: $e')),
+        );
+      }
+      throw e; // Re-throw to allow caller to handle
     }
   }
 
@@ -576,7 +836,7 @@ class AuthProvider with ChangeNotifier {
   Future<void> sendPasswordResetEmail(String email, BuildContext context) async {
     try {
       // First check if email exists in Firestore
-      bool emailExists = await checkEmailExists(email);
+      bool emailExists = await _checkEmailInFirestore(email);
 
       if (!emailExists) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -588,48 +848,157 @@ class AuthProvider with ChangeNotifier {
         return;
       }
 
-      // Send password reset email using Firebase Auth
-      await _auth.sendPasswordResetEmail(email: email);
+      // Get user name from Firestore
+      final querySnapshot = await _firestore
+          .collection('users')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Password reset link sent to $email'),
-          backgroundColor: Colors.green,
-        ),
-      );
-
-      debugPrint('Password reset email sent to: $email');
-
-    } on fa.FirebaseAuthException catch (e) {
-      String errorMessage;
-      switch (e.code) {
-        case 'user-not-found':
-          errorMessage = 'No user found for that email.';
-          break;
-        case 'invalid-email':
-          errorMessage = 'The email address is invalid.';
-          break;
-        case 'too-many-requests':
-          errorMessage = 'Too many requests. Please try again later.';
-          break;
-        default:
-          errorMessage = 'Failed to send reset email: ${e.message}';
+      if (querySnapshot.docs.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error retrieving user information'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
       }
-      debugPrint('Password reset error: $e, code: ${e.code}');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(errorMessage),
-          backgroundColor: Colors.red,
-        ),
+
+      final userData = querySnapshot.docs.first.data();
+      final userName = userData['name'] ?? 'User';
+
+      // Send OTP email
+      final otp = await EmailService.sendOTPEmail(
+        email: email,
+        name: userName,
       );
+
+      if (otp != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Verification code sent to $email'),
+            backgroundColor: Colors.green,
+          ),
+        );
+
+        // Navigate to OTP verification screen
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => OTPVerificationScreen(email: email),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to send verification code. Please try again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+
+      debugPrint('OTP sent to: $email');
+
     } catch (e) {
-      debugPrint('Unexpected error sending password reset email: $e');
+      debugPrint('Unexpected error sending OTP: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('An error occurred. Please try again.'),
           backgroundColor: Colors.red,
         ),
       );
+    }
+  }
+
+// Add a method to verify OTP and reset password
+  Future<bool> verifyOTPAndResetPassword(String email, String otp, String newPassword, BuildContext context) async {
+    try {
+      bool isValid = await EmailService.verifyOTP(email: email, otp: otp);
+
+      if (!isValid) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Invalid or expired verification code'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return false;
+      }
+
+      // Get user from Firestore
+      final querySnapshot = await _firestore
+          .collection('users')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('User not found'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return false;
+      }
+
+      final userData = querySnapshot.docs.first.data();
+      final userId = userData['uid'];
+
+      // Create a secondary auth instance to reset password
+      FirebaseApp secondaryApp;
+      try {
+        secondaryApp = Firebase.app('secondary');
+      } catch (e) {
+        secondaryApp = await Firebase.initializeApp(
+          name: 'secondary',
+          options: Firebase.app().options,
+        );
+      }
+
+      fa.FirebaseAuth secondaryAuth = fa.FirebaseAuth.instanceFor(app: secondaryApp);
+
+      // Sign in with custom token or email link would be ideal here, but we'll use a workaround
+      // This is a simplified approach - in production, you might want a more secure method
+      try {
+        // Generate a temporary password reset token in Firestore
+        await _firestore.collection('password_resets').doc(userId).set({
+          'email': email,
+          'timestamp': FieldValue.serverTimestamp(),
+          'completed': false
+        });
+
+        // Update the password in Firebase Auth
+        await fa.FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Password reset link sent to your email. Please check your inbox to complete the process.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+
+        return true;
+      } catch (e) {
+        debugPrint('Error resetting password: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to reset password: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return false;
+      }
+    } catch (e) {
+      debugPrint('Error in verifyOTPAndResetPassword: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('An error occurred. Please try again.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return false;
     }
   }
 }

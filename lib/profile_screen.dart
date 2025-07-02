@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'auth_provider.dart';
@@ -18,7 +19,12 @@ class _ProfileScreenState extends State<ProfileScreen>
   final TextEditingController permanentAddressController = TextEditingController();
   final TextEditingController currentAddressController = TextEditingController();
   final TextEditingController alternateMobileController = TextEditingController();
+  final TextEditingController mobileController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
+
+  // Add ScrollController for header visibility
+  final ScrollController _scrollController = ScrollController();
+  bool _isHeaderVisible = true;
 
   bool _isLoading = false;
   bool _obscurePassword = true;
@@ -41,6 +47,24 @@ class _ProfileScreenState extends State<ProfileScreen>
     _initAnimations();
     _setupListeners();
     _loadUserData();
+
+    // Add scroll listener for header visibility
+    _scrollController.addListener(_scrollListener);
+  }
+
+  void _scrollListener() {
+    // Hide header when scrolled down more than 50 pixels
+    if (_scrollController.offset > 50 && _isHeaderVisible) {
+      setState(() {
+        _isHeaderVisible = false;
+      });
+    }
+    // Show header when scrolled back to top
+    else if (_scrollController.offset <= 50 && !_isHeaderVisible) {
+      setState(() {
+        _isHeaderVisible = true;
+      });
+    }
   }
 
   void _initAnimations() {
@@ -76,6 +100,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     permanentAddressController.addListener(_checkForChanges);
     currentAddressController.addListener(_checkForChanges);
     alternateMobileController.addListener(_checkForChanges);
+    mobileController.addListener(_checkForChanges);
   }
 
   Future<void> _loadUserData() async {
@@ -110,6 +135,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     aadhaarController.text = _userData?['aadhaarNumber'] ?? '';
     panController.text = _userData?['panNumber'] ?? '';
     bloodGroupController.text = _userData?['bloodGroup'] ?? '';
+    mobileController.text = _userData?['mobileNumber'] ?? '';
     permanentAddressController.text = _userData?['permanentAddress'] ?? '';
     currentAddressController.text = _userData?['currentAddress'] ?? '';
     alternateMobileController.text = _userData?['alternateMobile'] ?? '';
@@ -129,13 +155,14 @@ class _ProfileScreenState extends State<ProfileScreen>
     bool hasBloodGroupChanged = bloodGroupController.text != (_userData?['bloodGroup'] ?? '');
     bool hasPermanentAddressChanged = permanentAddressController.text != (_userData?['permanentAddress'] ?? '');
     bool hasCurrentAddressChanged = currentAddressController.text != (_userData?['currentAddress'] ?? '');
+    bool hasMobileChanged = mobileController.text != (_userData?['mobileNumber'] ?? '');
     bool hasAlternateMobileChanged = alternateMobileController.text != (_userData?['alternateMobile'] ?? '');
     bool hasRelationChanged = _selectedRelation != (_userData?['alternateContactRelation'] ?? 'father');
 
     setState(() {
       _hasChanges = hasNameChanged || hasPasswordChanged || hasAadhaarChanged ||
           hasPanChanged || hasBloodGroupChanged || hasPermanentAddressChanged ||
-          hasCurrentAddressChanged || hasAlternateMobileChanged || hasRelationChanged;
+          hasCurrentAddressChanged || hasMobileChanged || hasAlternateMobileChanged || hasRelationChanged;
     });
   }
 
@@ -146,7 +173,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
     final aadhaarRegex = RegExp(r'^\d{12}$');
     if (!aadhaarRegex.hasMatch(value.trim())) {
-      return 'Aadhaar number must be 12 digits';
+      return 'Aadhaar number must be exactly 12 digits';
     }
     return null;
   }
@@ -157,7 +184,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
     final panRegex = RegExp(r'^[A-Z]{5}\d{4}[A-Z]{1}$');
     if (!panRegex.hasMatch(value.trim().toUpperCase())) {
-      return 'Please enter a valid PAN number';
+      return 'PAN format: 5 letters + 4 digits + 1 letter (e.g., ABCDE1234F)';
     }
     return null;
   }
@@ -185,17 +212,19 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   String? _validateMobileNumber(String? value) {
     if (value == null || value.trim().isEmpty) {
-      return 'Alternate mobile number is required';
+      return 'Mobile number is required';
     }
     final mobileRegex = RegExp(r'^[6-9]\d{9}$');
     if (!mobileRegex.hasMatch(value.trim())) {
-      return 'Please enter a valid 10-digit mobile number';
+      return 'Enter a valid 10-digit mobile number starting with 6-9';
     }
     return null;
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_scrollListener);
+    _scrollController.dispose();
     _slideController.dispose();
     _fadeController.dispose();
     nameController.dispose();
@@ -206,6 +235,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     permanentAddressController.dispose();
     currentAddressController.dispose();
     alternateMobileController.dispose();
+    mobileController.dispose();
     super.dispose();
   }
 
@@ -222,14 +252,15 @@ class _ProfileScreenState extends State<ProfileScreen>
         throw Exception('User not authenticated');
       }
 
-      // Update basic profile
+      // Update basic profile - pass silent=true to prevent SnackBar
       await authProvider.updateProfile(
         nameController.text,
         passwordController.text.isEmpty ? null : passwordController.text,
         context,
+        silent: true, // Add this parameter to prevent SnackBar
       );
 
-      // Update employee details with relation
+      // Update employee details with relation - pass silent=true to prevent SnackBar
       await authProvider.updateEmployeeDetails(
         userId: userId,
         aadhaarNumber: aadhaarController.text.trim(),
@@ -237,11 +268,14 @@ class _ProfileScreenState extends State<ProfileScreen>
         bloodGroup: bloodGroupController.text.trim().toUpperCase(),
         permanentAddress: permanentAddressController.text.trim(),
         currentAddress: currentAddressController.text.trim(),
+        mobileNumber: mobileController.text.trim(),
         alternateMobile: alternateMobileController.text.trim(),
-        alternateContactRelation: _selectedRelation, // Pass the selected relation
+        alternateContactRelation: _selectedRelation,
         context: context,
+        silent: true, // Add this parameter to prevent SnackBar
       );
 
+      // Show a single SnackBar from this screen
       _showSnackBar('Profile updated successfully!', isError: false);
       await Future.delayed(Duration(milliseconds: 500));
       Navigator.pop(context);
@@ -358,9 +392,11 @@ class _ProfileScreenState extends State<ProfileScreen>
     bool obscureText = false,
     bool isPassword = false,
     int maxLines = 1,
+    int? maxLength,
     TextInputType keyboardType = TextInputType.text,
     TextCapitalization textCapitalization = TextCapitalization.none,
     String? Function(String?)? validator,
+    List<TextInputFormatter>? inputFormatters,
   }) {
     return Container(
       margin: EdgeInsets.only(bottom: 20),
@@ -369,11 +405,14 @@ class _ProfileScreenState extends State<ProfileScreen>
         obscureText: obscureText,
         validator: validator,
         maxLines: maxLines,
+        maxLength: maxLength,
         keyboardType: keyboardType,
         textCapitalization: textCapitalization,
+        inputFormatters: inputFormatters,
         style: TextStyle(fontSize: 16),
         decoration: InputDecoration(
           labelText: label,
+          counterText: maxLength != null ? null : "",
           prefixIcon: Container(
             margin: EdgeInsets.all(8),
             padding: EdgeInsets.all(8),
@@ -443,6 +482,11 @@ class _ProfileScreenState extends State<ProfileScreen>
                   controller: alternateMobileController,
                   validator: _validateMobileNumber,
                   keyboardType: TextInputType.phone,
+                  maxLength: 10,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(10),
+                  ],
                   style: TextStyle(fontSize: 16),
                   decoration: InputDecoration(
                     prefixIcon: Container(
@@ -455,6 +499,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                       child: Icon(Icons.phone, color: Colors.blue[600], size: 20),
                     ),
                     labelText: 'Mobile Number',
+                    counterText: "",
                     labelStyle: TextStyle(color: Colors.grey[600]),
                     filled: true,
                     fillColor: Colors.grey[50],
@@ -690,10 +735,18 @@ class _ProfileScreenState extends State<ProfileScreen>
       backgroundColor: Colors.grey[50],
       body: Column(
         children: [
-          // Header Section
-          FadeTransition(
-            opacity: _fadeAnimation,
-            child: _buildProfileHeader(),
+          // Header Section with animated visibility
+          AnimatedContainer(
+            duration: Duration(milliseconds: 300),
+            height: _isHeaderVisible ? null : 0,
+            child: AnimatedOpacity(
+              opacity: _isHeaderVisible ? 1.0 : 0.0,
+              duration: Duration(milliseconds: 200),
+              child: FadeTransition(
+                opacity: _fadeAnimation,
+                child: _buildProfileHeader(),
+              ),
+            ),
           ),
 
           // Form Section
@@ -701,6 +754,7 @@ class _ProfileScreenState extends State<ProfileScreen>
             child: SlideTransition(
               position: _slideAnimation,
               child: SingleChildScrollView(
+                controller: _scrollController, // Add scroll controller
                 padding: EdgeInsets.all(24),
                 child: Form(
                   key: _formKey,
@@ -752,6 +806,11 @@ class _ProfileScreenState extends State<ProfileScreen>
                         label: 'Aadhaar Number',
                         icon: Icons.credit_card,
                         keyboardType: TextInputType.number,
+                        maxLength: 12,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(12),
+                        ],
                         validator: _validateAadhaar,
                       ),
 
@@ -760,6 +819,12 @@ class _ProfileScreenState extends State<ProfileScreen>
                         label: 'PAN Number',
                         icon: Icons.credit_card,
                         textCapitalization: TextCapitalization.characters,
+                        maxLength: 10,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
+                          LengthLimitingTextInputFormatter(10),
+                          UpperCaseTextFormatter(),
+                        ],
                         validator: _validatePan,
                       ),
 
@@ -772,6 +837,19 @@ class _ProfileScreenState extends State<ProfileScreen>
 
                       // Contact Information Section
                       _buildSectionHeader('Contact Information', Icons.contact_phone),
+
+                      _buildCustomTextField(
+                        controller: mobileController,
+                        label: 'Primary Mobile Number',
+                        icon: Icons.phone,
+                        keyboardType: TextInputType.phone,
+                        maxLength: 10,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(10),
+                        ],
+                        validator: _validateMobileNumber,
+                      ),
 
                       // Updated alternate mobile field with relationship
                       _buildAlternateMobileWithRelation(),
@@ -812,6 +890,18 @@ class _ProfileScreenState extends State<ProfileScreen>
           ),
         ],
       ),
+    );
+  }
+}
+
+// Custom formatter for uppercase text
+class UpperCaseTextFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    return TextEditingValue(
+      text: newValue.text.toUpperCase(),
+      selection: newValue.selection,
     );
   }
 }

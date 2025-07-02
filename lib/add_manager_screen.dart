@@ -16,6 +16,7 @@ class _AddManagerScreenState extends State<AddManagerScreen> {
   String? selectedOfficeLocationId;
   bool _isLoading = false;
   bool _obscurePassword = true;
+  String? _errorMessage; // Add error message state
 
   @override
   void dispose() {
@@ -282,6 +283,39 @@ class _AddManagerScreenState extends State<AddManagerScreen> {
                           );
                         },
                       ),
+
+                      // Error Message Display
+                      if (_errorMessage != null) ...[
+                        SizedBox(height: 12),
+                        Container(
+                          padding: EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.red[50],
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.red[200]!),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.error_outline,
+                                color: Colors.red[600],
+                                size: 20,
+                              ),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _errorMessage!,
+                                  style: TextStyle(
+                                    color: Colors.red[600],
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -407,7 +441,11 @@ class _AddManagerScreenState extends State<AddManagerScreen> {
       return;
     }
 
-    setState(() => _isLoading = true);
+    // Clear any previous error message
+    setState(() {
+      _errorMessage = null;
+      _isLoading = true;
+    });
 
     try {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
@@ -417,43 +455,38 @@ class _AddManagerScreenState extends State<AddManagerScreen> {
         passwordController.text,
         selectedOfficeLocationId,
         context,
-      );
-
-      if (authProvider.role == 'admin') {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.check_circle, color: Colors.white),
-                SizedBox(width: 8),
-                Text('Manager added successfully!'),
-              ],
+        onSuccess: () {
+          // Show success message but don't navigate back
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  Icon(Icons.check_circle, color: Colors.white),
+                  SizedBox(width: 8),
+                  Text('Manager added successfully!'),
+                ],
+              ),
+              backgroundColor: Colors.green,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              Icon(Icons.error, color: Colors.white),
-              SizedBox(width: 8),
-              Expanded(child: Text('Failed to add manager: ${e.toString()}')),
-            ],
-          ),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
+          );
+          // Clear the form
+          emailController.clear();
+          nameController.clear();
+          passwordController.clear();
+          setState(() {
+            selectedOfficeLocationId = null;
+          });
+        },
+        onError: (String errorMessage) {
+          // Show error below office location field
+          setState(() {
+            _errorMessage = errorMessage;
+          });
+        },
       );
     } finally {
       if (mounted) {

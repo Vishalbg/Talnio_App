@@ -105,7 +105,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                       ),
                       SizedBox(height: 8),
                       Text(
-                        'Enter your email address and we\'ll send you a link to reset your password',
+                        'Enter your email address and we\'ll send you a verification code to reset your password',
                         style: theme.textTheme.bodyLarge?.copyWith(
                           color: Colors.grey.shade600,
                         ),
@@ -179,7 +179,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                               Icon(Icons.email),
                               SizedBox(width: 8),
                               Text(
-                                'Send Reset Link',
+                                'Send Verification Code',
                                 style: TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
@@ -208,7 +208,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                             SizedBox(width: 12),
                             Expanded(
                               child: Text(
-                                'Check your email for a password reset link. Don\'t forget to check your spam folder.',
+                                'Check your email for a verification code. Don\'t forget to check your spam folder.',
                                 style: TextStyle(
                                   color: Colors.blue.shade700,
                                   fontSize: 14,

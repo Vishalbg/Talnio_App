@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // Add this import for input formatters
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'auth_provider.dart';
@@ -16,8 +17,9 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
   final TextEditingController bloodGroupController = TextEditingController();
   final TextEditingController permanentAddressController = TextEditingController();
   final TextEditingController currentAddressController = TextEditingController();
+  final TextEditingController mobileController = TextEditingController(); // Added mobile controller
   final TextEditingController alternateMobileController = TextEditingController();
-  String _selectedRelation = 'father'; // Default relation
+  String? _selectedRelation; // Changed to nullable with no default value
   bool _isLoading = false;
 
   // List of available relations
@@ -30,6 +32,7 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
     bloodGroupController.dispose();
     permanentAddressController.dispose();
     currentAddressController.dispose();
+    mobileController.dispose(); // Added disposal
     alternateMobileController.dispose();
     super.dispose();
   }
@@ -80,11 +83,33 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
 
   String? _validateMobileNumber(String? value) {
     if (value == null || value.trim().isEmpty) {
+      return 'Mobile number is required';
+    }
+    final mobileRegex = RegExp(r'^[6-9]\d{9}$');
+    if (!mobileRegex.hasMatch(value.trim())) {
+      return 'Please enter a valid 10-digit mobile number';
+    }
+    return null;
+  }
+
+  String? _validateAlternateMobileNumber(String? value) {
+    if (value == null || value.trim().isEmpty) {
       return 'Alternate mobile number is required';
     }
     final mobileRegex = RegExp(r'^[6-9]\d{9}$');
     if (!mobileRegex.hasMatch(value.trim())) {
       return 'Please enter a valid 10-digit mobile number';
+    }
+    // Check if alternate mobile is same as primary mobile
+    if (value.trim() == mobileController.text.trim()) {
+      return 'Alternate mobile cannot be same as primary mobile';
+    }
+    return null;
+  }
+
+  String? _validateRelation(String? value) {
+    if (value == null || value.isEmpty) {
+      return 'Please select relation';
     }
     return null;
   }
@@ -155,8 +180,9 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
         bloodGroup: bloodGroupController.text.trim().toUpperCase(),
         permanentAddress: permanentAddressController.text.trim(),
         currentAddress: currentAddressController.text.trim(),
+        mobileNumber: mobileController.text.trim(), // Added mobile number
         alternateMobile: alternateMobileController.text.trim(),
-        alternateContactRelation: _selectedRelation, // Pass the selected relation
+        alternateContactRelation: _selectedRelation!, // Pass the selected relation
         context: context,
       );
 
@@ -285,13 +311,18 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Existing fields...
+                      // Aadhaar Number with input formatter
                       _buildInputLabel('Aadhaar Number'),
                       SizedBox(height: 8),
                       TextFormField(
                         controller: aadhaarController,
                         validator: _validateAadhaar,
                         keyboardType: TextInputType.number,
+                        // Add input formatter to limit to 12 digits
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(12),
+                        ],
                         decoration: _buildInputDecoration(
                           hintText: 'Enter 12-digit Aadhaar number',
                           prefixIcon: Icons.credit_card,
@@ -300,12 +331,19 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
 
                       SizedBox(height: 20),
 
+                      // PAN Number with input formatter
                       _buildInputLabel('PAN Number'),
                       SizedBox(height: 8),
                       TextFormField(
                         controller: panController,
                         validator: _validatePan,
                         textCapitalization: TextCapitalization.characters,
+                        // Add input formatter to limit to 10 characters and uppercase
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9]')),
+                          LengthLimitingTextInputFormatter(10),
+                          UpperCaseTextFormatter(),
+                        ],
                         decoration: _buildInputDecoration(
                           hintText: 'Enter PAN number',
                           prefixIcon: Icons.credit_card,
@@ -314,11 +352,17 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
 
                       SizedBox(height: 20),
 
+                      // Blood Group with input formatter
                       _buildInputLabel('Blood Group'),
                       SizedBox(height: 8),
                       TextFormField(
                         controller: bloodGroupController,
                         validator: _validateBloodGroup,
+                        // Add input formatter to limit to 3 characters
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z\+\-]')),
+                          LengthLimitingTextInputFormatter(3),
+                        ],
                         decoration: _buildInputDecoration(
                           hintText: 'Enter blood group (e.g., A+, O-)',
                           prefixIcon: Icons.medical_services,
@@ -333,6 +377,10 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
                         controller: permanentAddressController,
                         validator: (value) => _validateAddress(value, 'Permanent Address'),
                         maxLines: 3,
+                        // Add reasonable character limit for address
+                        inputFormatters: [
+                          LengthLimitingTextInputFormatter(200),
+                        ],
                         decoration: _buildInputDecoration(
                           hintText: 'Enter permanent address',
                           prefixIcon: Icons.home,
@@ -347,9 +395,33 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
                         controller: currentAddressController,
                         validator: (value) => _validateAddress(value, 'Current Address'),
                         maxLines: 3,
+                        // Add reasonable character limit for address
+                        inputFormatters: [
+                          LengthLimitingTextInputFormatter(200),
+                        ],
                         decoration: _buildInputDecoration(
                           hintText: 'Enter current address',
                           prefixIcon: Icons.location_city,
+                        ),
+                      ),
+
+                      SizedBox(height: 20),
+
+                      // Mobile Number Field (Added)
+                      _buildInputLabel('Mobile Number'),
+                      SizedBox(height: 8),
+                      TextFormField(
+                        controller: mobileController,
+                        validator: _validateMobileNumber,
+                        keyboardType: TextInputType.phone,
+                        // Add input formatter to limit to 10 digits
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(10),
+                        ],
+                        decoration: _buildInputDecoration(
+                          hintText: 'Enter your mobile number',
+                          prefixIcon: Icons.phone,
                         ),
                       ),
 
@@ -365,8 +437,13 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
                             flex: 2,
                             child: TextFormField(
                               controller: alternateMobileController,
-                              validator: _validateMobileNumber,
+                              validator: _validateAlternateMobileNumber,
                               keyboardType: TextInputType.phone,
+                              // Add input formatter to limit to 10 digits
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                                LengthLimitingTextInputFormatter(10),
+                              ],
                               decoration: _buildInputDecoration(
                                 hintText: 'Enter alternate mobile number',
                                 prefixIcon: Icons.phone,
@@ -376,40 +453,71 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
                           SizedBox(width: 12),
                           Expanded(
                             flex: 1,
-                            child: Container(
-                              height: 56, // Match height with TextFormField
-                              decoration: BoxDecoration(
-                                color: Colors.grey[50],
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: Colors.grey[300]!),
-                              ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  value: _selectedRelation,
-                                  icon: Icon(Icons.arrow_drop_down, color: Colors.grey[600]),
-                                  elevation: 16,
-                                  style: TextStyle(color: Colors.grey[800], fontSize: 16),
-                                  isExpanded: true,
-                                  padding: EdgeInsets.symmetric(horizontal: 12),
-                                  borderRadius: BorderRadius.circular(12),
-                                  onChanged: (String? newValue) {
-                                    setState(() {
-                                      _selectedRelation = newValue!;
-                                    });
-                                  },
-                                  items: _relations.map<DropdownMenuItem<String>>((String value) {
-                                    return DropdownMenuItem<String>(
-                                      value: value,
-                                      child: Text(
-                                        value.substring(0, 1).toUpperCase() + value.substring(1),
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.w500,
+                            child: FormField<String>(
+                              validator: _validateRelation,
+                              builder: (FormFieldState<String> state) {
+                                return Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Container(
+                                      height: 56, // Match height with TextFormField
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey[50],
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: state.hasError ? Colors.red[400]! : Colors.grey[300]!,
                                         ),
                                       ),
-                                    );
-                                  }).toList(),
-                                ),
-                              ),
+                                      child: DropdownButtonHideUnderline(
+                                        child: DropdownButton<String>(
+                                          value: _selectedRelation,
+                                          hint: Text(
+                                            'Select',
+                                            style: TextStyle(
+                                              color: Colors.grey[500],
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                          icon: Icon(Icons.arrow_drop_down, color: Colors.grey[600]),
+                                          elevation: 16,
+                                          style: TextStyle(color: Colors.grey[800], fontSize: 16),
+                                          isExpanded: true,
+                                          padding: EdgeInsets.symmetric(horizontal: 12),
+                                          borderRadius: BorderRadius.circular(12),
+                                          onChanged: (String? newValue) {
+                                            setState(() {
+                                              _selectedRelation = newValue;
+                                            });
+                                            state.didChange(newValue);
+                                          },
+                                          items: _relations.map<DropdownMenuItem<String>>((String value) {
+                                            return DropdownMenuItem<String>(
+                                              value: value,
+                                              child: Text(
+                                                value.substring(0, 1).toUpperCase() + value.substring(1),
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            );
+                                          }).toList(),
+                                        ),
+                                      ),
+                                    ),
+                                    if (state.hasError)
+                                      Padding(
+                                        padding: EdgeInsets.only(left: 12, top: 5),
+                                        child: Text(
+                                          state.errorText!,
+                                          style: TextStyle(
+                                            color: Colors.red[400],
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                );
+                              },
                             ),
                           ),
                         ],
@@ -490,6 +598,17 @@ class _EmployeeDetailsScreenState extends State<EmployeeDetailsScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+// Custom formatter to convert text to uppercase
+class UpperCaseTextFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    return TextEditingValue(
+      text: newValue.text.toUpperCase(),
+      selection: newValue.selection,
     );
   }
 }

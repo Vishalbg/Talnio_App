@@ -1,6 +1,7 @@
 import 'package:mailer/mailer.dart';
 import 'package:mailer/smtp_server.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:math';
 
 class EmailService {
   // SMTP Configuration - Replace with your actual SMTP settings
@@ -12,6 +13,98 @@ class EmailService {
   static const String _fromName = 'Talnio';
 
   static SmtpServer get _smtpServer => gmail(_username, _password);
+
+  // Generate a random 6-digit OTP
+  static String generateOTP() {
+    Random random = Random();
+    int otp = random.nextInt(900000) + 100000; // Generates a number between 100000 and 999999
+    return otp.toString();
+  }
+
+  // Send OTP email for authentication
+  static Future<String?> sendOTPEmail({
+    required String email,
+    required String name,
+  }) async {
+    try {
+      // Generate OTP
+      final otp = generateOTP();
+
+      final message = Message()
+        ..from = Address(_fromEmail, _fromName)
+        ..recipients.add(email)
+        ..subject = 'Your Talnio Authentication Code'
+        ..html = '''
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #2563EB; color: white; padding: 20px; text-align: center;">
+              <h1 style="margin: 0;">Authentication Code</h1>
+            </div>
+            <div style="padding: 20px; background-color: #f9fafb;">
+              <p>Dear $name,</p>
+              <p>Your authentication code for Talnio is:</p>
+              <div style="background-color: #e5edff; padding: 15px; border-radius: 8px; margin: 15px 0; text-align: center;">
+                <h2 style="color: #2563EB; margin: 0; letter-spacing: 5px; font-size: 32px;">$otp</h2>
+              </div>
+              
+              <p>This code will expire in 10 minutes.</p>
+              <p>If you didn't request this code, please ignore this email.</p>
+              <p>Best regards,<br>Talnio</p>
+            </div>
+          </div>
+        ''';
+
+      await send(message, _smtpServer);
+      print('OTP email sent successfully to $email');
+
+      // Store OTP in Firestore with expiration time
+      await FirebaseFirestore.instance.collection('otps').doc(email).set({
+        'otp': otp,
+        'createdAt': FieldValue.serverTimestamp(),
+        'expiresAt': Timestamp.fromDate(DateTime.now().add(Duration(minutes: 10))),
+        'used': false
+      });
+
+      return otp;
+    } catch (e) {
+      print('Error sending OTP email: $e');
+      return null;
+    }
+  }
+
+  // Verify OTP
+  static Future<bool> verifyOTP({required String email, required String otp}) async {
+    try {
+      final otpDoc = await FirebaseFirestore.instance.collection('otps').doc(email).get();
+
+      if (!otpDoc.exists) {
+        print('No OTP found for email: $email');
+        return false;
+      }
+
+      final otpData = otpDoc.data()!;
+      final storedOTP = otpData['otp'];
+      final expiresAt = otpData['expiresAt'] as Timestamp;
+      final used = otpData['used'] as bool;
+
+      // Check if OTP is valid, not expired, and not used
+      if (storedOTP == otp &&
+          DateTime.now().isBefore(expiresAt.toDate()) &&
+          !used) {
+
+        // Mark OTP as used
+        await FirebaseFirestore.instance.collection('otps').doc(email).update({
+          'used': true
+        });
+
+        return true;
+      }
+
+      return false;
+    } catch (e) {
+      print('Error verifying OTP: $e');
+      return false;
+    }
+  }
 
   // Send task assignment email
   static Future<bool> sendTaskAssignmentEmail({
