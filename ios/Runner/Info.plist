@@ -32,6 +32,8 @@
 	<false/>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+	<key>NSLocalNetworkUsageDescription</key>
+    <string>This app requires local network access to enable debugging features such as hot reload and DevTools during development.</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
