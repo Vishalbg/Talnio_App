@@ -7,10 +7,15 @@ import 'home_screen.dart';
 import 'theme.dart';
 import 'forgot_password_screen.dart';
 import 'notification_scheduler.dart';
+import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+
+  // Initialize Firebase with options from firebase_options.dart
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   // Start the notification scheduler
   NotificationScheduler.startScheduler();
