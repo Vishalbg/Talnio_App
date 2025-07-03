@@ -30,11 +30,10 @@ ThemeData appTheme() {
       labelStyle: GoogleFonts.roboto(color: Colors.grey[600]),
       errorStyle: GoogleFonts.roboto(color: Colors.redAccent),
     ),
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData( // Changed from CardTheme to CardThemeData
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       margin: EdgeInsets.symmetric(vertical: 8, horizontal: 16),
     ),
   );
 }
-
