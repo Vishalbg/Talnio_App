@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fa;
 import 'package:intl/intl.dart';
-import 'edit_task_dialog.dart'; // Import for edit dialog
+import 'edit_task_dialog.dart';
 
 class TaskCardWidget extends StatefulWidget {
   final Map<String, dynamic> data;
   final String docId;
   final bool isManager;
-  final String? employeeName;
   final VoidCallback onRefresh;
   final bool showEditButton;
 
@@ -16,9 +16,8 @@ class TaskCardWidget extends StatefulWidget {
     required this.data,
     required this.docId,
     required this.isManager,
-    this.employeeName,
     required this.onRefresh,
-    this.showEditButton = true, // Default to true, but can be disabled for completed tasks
+    this.showEditButton = true,
   }) : super(key: key);
 
   @override
@@ -77,24 +76,99 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
       curve: Curves.easeInOut,
     ));
 
-    if (widget.data['status'] == 'assigned' && !widget.isManager) {
-      _pulseController.repeat(reverse: true);
+    // Check if current user's status is assigned and start pulse animation
+    final currentUserId = fa.FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId != null && !widget.isManager) {
+      final userStatus = _getCurrentUserStatus(currentUserId);
+      if (userStatus == 'assigned') {
+        _pulseController.repeat(reverse: true);
+      }
     }
 
     _checkIfNeedsQuickActionsAfterStart();
   }
 
+  // Get current user's status from assignedEmployees array
+  String _getCurrentUserStatus(String userId) {
+    final assignedEmployees = widget.data['assignedEmployees'] as List<dynamic>? ?? [];
+    for (var employee in assignedEmployees) {
+      if (employee['employeeId'] == userId) {
+        return employee['status'] ?? 'assigned';
+      }
+    }
+    return 'assigned';
+  }
+
+  // Get current user's employee data from assignedEmployees array
+  Map<String, dynamic>? _getCurrentUserEmployeeData(String userId) {
+    final assignedEmployees = widget.data['assignedEmployees'] as List<dynamic>? ?? [];
+    for (var employee in assignedEmployees) {
+      if (employee['employeeId'] == userId) {
+        return employee as Map<String, dynamic>;
+      }
+    }
+    return null;
+  }
+
+  // Calculate overall task status from individual employee statuses
+  String _calculateOverallStatus(List<dynamic> assignedEmployees) {
+    if (assignedEmployees.isEmpty) return 'unassigned';
+
+    int completed = 0;
+    int inProgress = 0;
+    int onHold = 0;
+    int assigned = 0;
+
+    for (var employee in assignedEmployees) {
+      final status = employee['status'] ?? 'assigned';
+      switch (status) {
+        case 'completed':
+          completed++;
+          break;
+        case 'in_progress':
+          inProgress++;
+          break;
+        case 'hold':
+          onHold++;
+          break;
+        case 'assigned':
+          assigned++;
+          break;
+      }
+    }
+
+    // If all employees completed, task is completed
+    if (completed == assignedEmployees.length) {
+      return 'completed';
+    }
+
+    // If any employee is in progress, task is in progress
+    if (inProgress > 0) {
+      return 'in_progress';
+    }
+
+    // If any employee is on hold, task is on hold
+    if (onHold > 0) {
+      return 'hold';
+    }
+
+    // Otherwise, task is assigned
+    return 'assigned';
+  }
+
   void _checkIfNeedsQuickActionsAfterStart() {
     try {
       final String dueDateStr = widget.data['dueDate']?.toString() ?? '';
+      final currentUserId = fa.FirebaseAuth.instance.currentUser?.uid;
 
-      if (dueDateStr.isNotEmpty) {
+      if (dueDateStr.isNotEmpty && currentUserId != null) {
         final dueDate = DateTime.parse(dueDateStr);
         final now = DateTime.now();
         final today = DateTime(now.year, now.month, now.day);
         final dueDateOnly = DateTime(dueDate.year, dueDate.month, dueDate.day);
 
-        if (dueDateOnly.isAtSameMomentAs(today) && widget.data['status'] == 'assigned') {
+        final userStatus = _getCurrentUserStatus(currentUserId);
+        if (dueDateOnly.isAtSameMomentAs(today) && userStatus == 'assigned') {
           _showQuickActionsAfterStart = true;
         }
       }
@@ -116,24 +190,27 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final dueDateOnly = DateTime(dueDate.year, dueDate.month, dueDate.day);
+    final currentUserId = fa.FirebaseAuth.instance.currentUser?.uid;
 
-    if (today.isAfter(dueDateOnly) && taskData['status'] != 'completed') {
-      final delayReasons = taskData['delayReasons'] as List<dynamic>? ?? [];
-      for (var reason in delayReasons) {
-        if (reason['submittedAt'] != null) {
-          final submittedDate = (reason['submittedAt'] as Timestamp).toDate();
-          final submittedDay = DateTime(submittedDate.year, submittedDate.month, submittedDate.day);
-          if (submittedDay.isAtSameMomentAs(today)) {
-            return false;
+    if (today.isAfter(dueDateOnly) && currentUserId != null) {
+      final userStatus = _getCurrentUserStatus(currentUserId);
+      if (userStatus != 'completed') {
+        final delayReasons = taskData['delayReasons'] as List<dynamic>? ?? [];
+        for (var reason in delayReasons) {
+          if (reason['submittedAt'] != null && reason['employeeId'] == currentUserId) {
+            final submittedDate = (reason['submittedAt'] as Timestamp).toDate();
+            final submittedDay = DateTime(submittedDate.year, submittedDate.month, submittedDate.day);
+            if (submittedDay.isAtSameMomentAs(today)) {
+              return false;
+            }
           }
         }
+        return true;
       }
-      return true;
     }
     return false;
   }
 
-  // Add delete confirmation dialog
   Future<void> _showDeleteConfirmationDialog() async {
     final String taskTitle = widget.data['title']?.toString() ?? 'Untitled Task';
 
@@ -209,7 +286,6 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
           ElevatedButton(
             onPressed: () async {
               Navigator.pop(context);
-              // Check if still mounted before proceeding
               if (mounted) {
                 await _deleteTask();
               }
@@ -227,12 +303,10 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
     );
   }
 
-  // Add delete task method with mounted check
   Future<void> _deleteTask() async {
     try {
       await FirebaseFirestore.instance.collection('tasks').doc(widget.docId).delete();
 
-      // Check if the widget is still mounted before accessing context
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -252,12 +326,105 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
 
       widget.onRefresh();
     } catch (e) {
-      // Check if the widget is still mounted before accessing context
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error deleting task: $e'),
+          backgroundColor: Colors.red[400],
+        ),
+      );
+    }
+  }
+
+  // Updated to work with individual employee status
+  Future<void> _updateIndividualStatus(String taskId, String newStatus) async {
+    final currentUserId = fa.FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    try {
+      final taskDoc = await FirebaseFirestore.instance.collection('tasks').doc(taskId).get();
+      if (!taskDoc.exists) return;
+
+      final taskData = taskDoc.data() as Map<String, dynamic>;
+      final assignedEmployees = List<Map<String, dynamic>>.from(taskData['assignedEmployees'] ?? []);
+
+      // Update current user's status
+      for (int i = 0; i < assignedEmployees.length; i++) {
+        if (assignedEmployees[i]['employeeId'] == currentUserId) {
+          assignedEmployees[i]['status'] = newStatus;
+
+          // Update timestamps based on status
+          if (newStatus == 'in_progress') {
+            assignedEmployees[i]['actualStartDate'] = DateTime.now().toIso8601String().split('T')[0];
+          } else if (newStatus == 'completed') {
+            assignedEmployees[i]['actualEndDate'] = DateTime.now().toIso8601String().split('T')[0];
+          }
+          break;
+        }
+      }
+
+      // Calculate new overall status
+      final overallStatus = _calculateOverallStatus(assignedEmployees);
+
+      // Update the task
+      await FirebaseFirestore.instance.collection('tasks').doc(taskId).update({
+        'assignedEmployees': assignedEmployees,
+        'overallStatus': overallStatus,
+        'status': overallStatus, // Keep for backward compatibility
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+
+      String message;
+      Color backgroundColor;
+      IconData icon;
+
+      switch (newStatus) {
+        case 'in_progress':
+          message = 'Task started successfully! 🚀';
+          backgroundColor = Color(0xFF10B981);
+          icon = Icons.rocket_launch;
+          break;
+        case 'completed':
+          message = 'Task completed successfully! 🎉';
+          backgroundColor = Colors.green[500]!;
+          icon = Icons.celebration;
+          break;
+        case 'hold':
+          message = 'Task put on hold';
+          backgroundColor = Color(0xFFF59E0B);
+          icon = Icons.pause_circle;
+          break;
+        default:
+          message = 'Status updated successfully';
+          backgroundColor = Color(0xFF3B82F6);
+          icon = Icons.check_circle;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(icon, color: Colors.white),
+              SizedBox(width: 8),
+              Expanded(child: Text(message)),
+            ],
+          ),
+          backgroundColor: backgroundColor,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+
+      widget.onRefresh();
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error updating status: $e'),
           backgroundColor: Colors.red[400],
         ),
       );
@@ -275,29 +442,7 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
       _pulseController.stop();
       await _slideController.forward();
 
-      await FirebaseFirestore.instance.collection('tasks').doc(taskId).update({
-        'status': 'in_progress',
-        'actualStartDate': DateTime.now().toIso8601String().split('T')[0],
-      });
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              Icon(Icons.rocket_launch, color: Colors.white),
-              SizedBox(width: 8),
-              Expanded(child: Text('Task started successfully! 🚀')),
-            ],
-          ),
-          backgroundColor: Color(0xFF10B981),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ),
-      );
-
-      widget.onRefresh();
+      await _updateIndividualStatus(taskId, 'in_progress');
 
       if (_showQuickActionsAfterStart) {
         Future.delayed(Duration(milliseconds: 1500), () {
@@ -645,40 +790,7 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
   }
 
   Future<void> _completeTaskDirectly(String taskId) async {
-    try {
-      await FirebaseFirestore.instance.collection('tasks').doc(taskId).update({
-        'status': 'completed',
-        'submittedAt': FieldValue.serverTimestamp(),
-        'actualEndDate': DateTime.now().toIso8601String().split('T')[0],
-      });
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              Icon(Icons.celebration, color: Colors.white),
-              SizedBox(width: 8),
-              Expanded(child: Text('Task completed successfully! 🎉')),
-            ],
-          ),
-          backgroundColor: Colors.green[500],
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ),
-      );
-      widget.onRefresh();
-    } catch (e) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error completing task: $e'),
-          backgroundColor: Colors.red[400],
-        ),
-      );
-    }
+    await _updateIndividualStatus(taskId, 'completed');
   }
 
   Future<void> _showOnHoldDialog(String taskId, String taskTitle) async {
@@ -761,44 +873,11 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                   ? null
                   : () async {
                 try {
-                  final now = DateTime.now();
-                  final formattedDate = DateFormat('yyyy-MM-dd').format(now);
-
-                  await FirebaseFirestore.instance.collection('tasks').doc(taskId).update({
-                    'status': 'hold',
-                    'delayReasons': FieldValue.arrayUnion([
-                      {
-                        'reason': holdReasonController.text.trim(),
-                        'submittedAt': Timestamp.fromDate(now),
-                        'date': formattedDate,
-                        'type': 'hold',
-                      }
-                    ]),
-                    'lastDelayReasonDate': formattedDate,
-                  });
-
+                  await _addDelayReason(taskId, holdReasonController.text.trim(), 'hold');
+                  await _updateIndividualStatus(taskId, 'hold');
                   Navigator.pop(context);
-
-                  if (!mounted) return;
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          Icon(Icons.pause_circle, color: Colors.white),
-                          SizedBox(width: 8),
-                          Expanded(child: Text('Task put on hold successfully')),
-                        ],
-                      ),
-                      backgroundColor: Color(0xFFF59E0B),
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                  );
-                  widget.onRefresh();
                 } catch (e) {
                   if (!mounted) return;
-
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('Error putting task on hold: $e'),
@@ -876,40 +955,11 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
             ElevatedButton(
               onPressed: () async {
                 try {
-                  Map<String, dynamic> updateData = {
-                    'status': 'completed',
-                    'submittedAt': FieldValue.serverTimestamp(),
-                    'actualEndDate': DateTime.now().toIso8601String().split('T')[0],
-                  };
-
-                  if (submissionController.text.trim().isNotEmpty) {
-                    updateData['submissionText'] = submissionController.text.trim();
-                  }
-
-                  await FirebaseFirestore.instance.collection('tasks').doc(taskId).update(updateData);
-
+                  await _updateIndividualSubmission(taskId, submissionController.text.trim());
+                  await _updateIndividualStatus(taskId, 'completed');
                   Navigator.pop(context);
-
-                  if (!mounted) return;
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          Icon(Icons.celebration, color: Colors.white),
-                          SizedBox(width: 8),
-                          Expanded(child: Text('Task completed successfully! 🎉')),
-                        ],
-                      ),
-                      backgroundColor: Colors.green[500],
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                  );
-                  widget.onRefresh();
                 } catch (e) {
                   if (!mounted) return;
-
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('Error completing task: $e'),
@@ -930,6 +980,33 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
         ),
       ),
     );
+  }
+
+  Future<void> _updateIndividualSubmission(String taskId, String submissionText) async {
+    final currentUserId = fa.FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    try {
+      final taskDoc = await FirebaseFirestore.instance.collection('tasks').doc(taskId).get();
+      if (!taskDoc.exists) return;
+
+      final taskData = taskDoc.data() as Map<String, dynamic>;
+      final assignedEmployees = List<Map<String, dynamic>>.from(taskData['assignedEmployees'] ?? []);
+
+      // Update current user's submission text
+      for (int i = 0; i < assignedEmployees.length; i++) {
+        if (assignedEmployees[i]['employeeId'] == currentUserId) {
+          assignedEmployees[i]['submissionText'] = submissionText;
+          break;
+        }
+      }
+
+      await FirebaseFirestore.instance.collection('tasks').doc(taskId).update({
+        'assignedEmployees': assignedEmployees,
+      });
+    } catch (e) {
+      print('Error updating submission: $e');
+    }
   }
 
   Future<void> _showDelayReasonDialog(String taskId, String taskTitle) async {
@@ -1012,28 +1089,11 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                   ? null
                   : () async {
                 try {
-                  final now = DateTime.now();
-                  final formattedDate = DateFormat('yyyy-MM-dd').format(now);
-                  final delayReason = delayReasonController.text.trim();
-
-                  await FirebaseFirestore.instance.collection('tasks').doc(taskId).update({
-                    'delayReasons': FieldValue.arrayUnion([
-                      {
-                        'reason': delayReason,
-                        'submittedAt': Timestamp.fromDate(now),
-                        'date': formattedDate,
-                        'type': 'delay',
-                      }
-                    ]),
-                    'lastDelayReasonDate': formattedDate,
-                  });
-
+                  await _addDelayReason(taskId, delayReasonController.text.trim(), 'delay');
                   Navigator.pop(context);
-                  _showDelayReasonOptionsDialog(taskId, taskTitle, delayReason);
-
+                  _showDelayReasonOptionsDialog(taskId, taskTitle, delayReasonController.text.trim());
                 } catch (e) {
                   if (!mounted) return;
-
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('Error submitting delay reason: $e'),
@@ -1054,6 +1114,31 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
         ),
       ),
     );
+  }
+
+  Future<void> _addDelayReason(String taskId, String reason, String type) async {
+    final currentUserId = fa.FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    try {
+      final now = DateTime.now();
+      final formattedDate = DateFormat('yyyy-MM-dd').format(now);
+
+      await FirebaseFirestore.instance.collection('tasks').doc(taskId).update({
+        'delayReasons': FieldValue.arrayUnion([
+          {
+            'reason': reason,
+            'submittedAt': Timestamp.fromDate(now),
+            'date': formattedDate,
+            'type': type,
+            'employeeId': currentUserId,
+          }
+        ]),
+        'lastDelayReasonDate': formattedDate,
+      });
+    } catch (e) {
+      print('Error adding delay reason: $e');
+    }
   }
 
   Future<void> _showDelayReasonOptionsDialog(String taskId, String taskTitle, String delayReason) async {
@@ -1146,32 +1231,10 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                   child: ElevatedButton.icon(
                     onPressed: () async {
                       try {
-                        await FirebaseFirestore.instance.collection('tasks').doc(taskId).update({
-                          'status': 'hold',
-                        });
-
+                        await _updateIndividualStatus(taskId, 'hold');
                         Navigator.pop(context);
-
-                        if (!mounted) return;
-
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Row(
-                              children: [
-                                Icon(Icons.pause_circle, color: Colors.white),
-                                SizedBox(width: 8),
-                                Expanded(child: Text('Task put on hold')),
-                              ],
-                            ),
-                            backgroundColor: Color(0xFFF59E0B),
-                            behavior: SnackBarBehavior.floating,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                        );
-                        widget.onRefresh();
                       } catch (e) {
                         if (!mounted) return;
-
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
                             content: Text('Error updating task: $e'),
@@ -1204,29 +1267,201 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
     );
   }
 
+  // Build assigned employees display
+  Widget _buildAssignedEmployeesDisplay() {
+    final assignedEmployees = widget.data['assignedEmployees'] as List<dynamic>? ?? [];
+
+    if (assignedEmployees.isEmpty) {
+      return Container(
+        padding: EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.grey[100],
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey[300]!),
+        ),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 16,
+              backgroundColor: Colors.grey[400],
+              child: Icon(Icons.person_off, color: Colors.white, size: 16),
+            ),
+            SizedBox(width: 12),
+            Text(
+              'Unassigned Task',
+              style: TextStyle(
+                color: Colors.grey[600],
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Assigned Employees (${assignedEmployees.length})',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF374151),
+          ),
+        ),
+        SizedBox(height: 8),
+        ...assignedEmployees.map((employee) {
+          final employeeName = employee['employeeName'] ?? 'Unknown';
+          final employeeStatus = employee['status'] ?? 'assigned';
+          final actualStartDate = employee['actualStartDate']?.toString();
+          final actualEndDate = employee['actualEndDate']?.toString();
+
+          Color statusColor;
+          Color statusBgColor;
+          IconData statusIcon;
+          String statusText;
+
+          switch (employeeStatus) {
+            case 'completed':
+              statusColor = Color(0xFF059669);
+              statusBgColor = Color(0xFFD1FAE5);
+              statusIcon = Icons.check_circle;
+              statusText = 'COMPLETED';
+              break;
+            case 'in_progress':
+              statusColor = Color(0xFF3B82F6);
+              statusBgColor = Color(0xFFDEEBFF);
+              statusIcon = Icons.play_arrow;
+              statusText = 'IN PROGRESS';
+              break;
+            case 'hold':
+              statusColor = Color(0xFFF59E0B);
+              statusBgColor = Color(0xFFFEF3C7);
+              statusIcon = Icons.pause;
+              statusText = 'ON HOLD';
+              break;
+            default:
+              statusColor = Color(0xFF6B7280);
+              statusBgColor = Color(0xFFF3F4F6);
+              statusIcon = Icons.assignment;
+              statusText = 'ASSIGNED';
+          }
+
+          return Container(
+            margin: EdgeInsets.only(bottom: 8),
+            padding: EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey[200]!),
+            ),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 16,
+                  backgroundColor: Color(0xFF2563EB),
+                  child: Text(
+                    employeeName.isNotEmpty ? employeeName[0].toUpperCase() : 'U',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        employeeName,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF374151),
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (actualStartDate != null || actualEndDate != null) ...[
+                        SizedBox(height: 4),
+                        Row(
+                          children: [
+                            if (actualStartDate != null) ...[
+                              Icon(Icons.play_arrow, size: 12, color: Color(0xFF059669)),
+                              SizedBox(width: 4),
+                              Text(
+                                DateFormat('MMM dd').format(DateTime.parse(actualStartDate)),
+                                style: TextStyle(fontSize: 11, color: Color(0xFF6B7280)),
+                              ),
+                            ],
+                            if (actualStartDate != null && actualEndDate != null) ...[
+                              SizedBox(width: 8),
+                              Icon(Icons.arrow_forward, size: 10, color: Color(0xFF9CA3AF)),
+                              SizedBox(width: 8),
+                            ],
+                            if (actualEndDate != null) ...[
+                              Icon(Icons.check_circle, size: 12, color: Color(0xFF059669)),
+                              SizedBox(width: 4),
+                              Text(
+                                DateFormat('MMM dd').format(DateTime.parse(actualEndDate)),
+                                style: TextStyle(fontSize: 11, color: Color(0xFF6B7280)),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                SizedBox(width: 8),
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: statusBgColor,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(statusIcon, size: 12, color: statusColor),
+                      SizedBox(width: 4),
+                      Text(
+                        statusText,
+                        style: TextStyle(
+                          color: statusColor,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 10,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final String title = widget.data['title']?.toString() ?? 'Untitled Task';
     final String description = widget.data['description']?.toString() ?? '';
     final String startDateStr = widget.data['startDate']?.toString() ?? DateTime.now().toIso8601String().split('T')[0];
     final String dueDateStr = widget.data['dueDate']?.toString() ?? DateTime.now().toIso8601String().split('T')[0];
-    final String? actualStartDateStr = widget.data['actualStartDate']?.toString();
-    final String? actualEndDateStr = widget.data['actualEndDate']?.toString();
-    final String status = widget.data['status']?.toString() ?? 'assigned';
-    final String? submissionText = widget.data['submissionText']?.toString();
+    final String? assignedBy = widget.data['assignedBy']?.toString();
+    final List<dynamic> assignedEmployees = widget.data['assignedEmployees'] as List<dynamic>? ?? [];
     final List<dynamic> delayReasons = widget.data['delayReasons'] as List<dynamic>? ?? [];
-    final String? assignedBy = widget.data['assignedBy']?.toString(); // Get the manager ID
+
+    // Get overall status
+    final overallStatus = widget.data['overallStatus']?.toString() ??
+        widget.data['status']?.toString() ??
+        _calculateOverallStatus(assignedEmployees);
 
     DateTime startDate;
     DateTime dueDate;
-    DateTime? actualStartDate;
-    DateTime? actualEndDate;
 
     try {
       startDate = DateTime.parse(startDateStr);
       dueDate = DateTime.parse(dueDateStr);
-      if (actualStartDateStr != null) actualStartDate = DateTime.parse(actualStartDateStr);
-      if (actualEndDateStr != null) actualEndDate = DateTime.parse(actualEndDateStr);
     } catch (e) {
       startDate = DateTime.now();
       dueDate = DateTime.now();
@@ -1236,16 +1471,30 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
     final today = DateTime(now.year, now.month, now.day);
     final dueDateOnly = DateTime(dueDate.year, dueDate.month, dueDate.day);
 
-    final isOverdue = today.isAfter(dueDateOnly) && status != 'completed';
+    final isOverdue = today.isAfter(dueDateOnly) && overallStatus != 'completed';
     final isDueToday = dueDateOnly.isAtSameMomentAs(today);
-    final needsDelayReason = _needsDelayReasonToday(widget.data);
+
+    // Get current user's status and data for employees
+    final currentUserId = fa.FirebaseAuth.instance.currentUser?.uid;
+    String currentUserStatus = 'assigned';
+    Map<String, dynamic>? currentUserData;
+    bool needsDelayReason = false;
+
+    if (currentUserId != null && !widget.isManager) {
+      currentUserStatus = _getCurrentUserStatus(currentUserId);
+      currentUserData = _getCurrentUserEmployeeData(currentUserId);
+      needsDelayReason = _needsDelayReasonToday(widget.data);
+    }
 
     Color statusColor;
     Color statusBgColor;
     IconData statusIcon;
     String statusText;
 
-    switch (status) {
+    // Display status based on overall status or user status for employees
+    final displayStatus = widget.isManager ? overallStatus : currentUserStatus;
+
+    switch (displayStatus) {
       case 'completed':
         statusColor = Color(0xFF059669);
         statusBgColor = Color(0xFFD1FAE5);
@@ -1331,39 +1580,13 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                           overflow: TextOverflow.ellipsis,
                           maxLines: 2,
                         ),
-
-                        // Show employee name for managers only
-                        if (widget.isManager && widget.employeeName != null) ...[
-                          SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Icon(Icons.person, size: 16, color: Color(0xFF6B7280)),
-                              SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  'Assigned to: ${widget.employeeName}',
-                                  style: TextStyle(color: Color(0xFF6B7280), fontSize: 14),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ] else if (widget.isManager && status == 'unassigned') ...[
-                          SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Icon(Icons.person_off, size: 16, color: Color(0xFF9CA3AF)),
-                              SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  'Unassigned Task',
-                                  style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 14, fontStyle: FontStyle.italic),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
+                        SizedBox(height: 4),
+                        Text(
+                          widget.isManager
+                              ? 'Overall Progress: ${assignedEmployees.length} employee(s)'
+                              : 'Your Task Status',
+                          style: TextStyle(color: Color(0xFF6B7280), fontSize: 12),
+                        ),
                       ],
                     ),
                   ),
@@ -1392,7 +1615,6 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                           ],
                         ),
                       ),
-                      // Edit and Delete buttons for managers (only if showEditButton is true)
                       if (widget.isManager && widget.showEditButton) ...[
                         SizedBox(height: 8),
                         Row(
@@ -1441,286 +1663,154 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
 
               SizedBox(height: 16),
 
-              Column(
+              // Date information
+              Row(
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          padding: EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: startDate.isAtSameMomentAs(today) ? Color(0xFFE0F2FE) : Color(0xFFF9FAFB),
-                            borderRadius: BorderRadius.circular(8),
-                            border: startDate.isAtSameMomentAs(today)
-                                ? Border.all(color: Color(0xFF0EA5E9).withOpacity(0.3))
-                                : null,
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                  Expanded(
+                    child: Container(
+                      padding: EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: startDate.isAtSameMomentAs(today) ? Color(0xFFE0F2FE) : Color(0xFFF9FAFB),
+                        borderRadius: BorderRadius.circular(8),
+                        border: startDate.isAtSameMomentAs(today)
+                            ? Border.all(color: Color(0xFF0EA5E9).withOpacity(0.3))
+                            : null,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
                             children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                      startDate.isAtSameMomentAs(today) ? Icons.today : Icons.play_arrow,
-                                      size: 16,
-                                      color: startDate.isAtSameMomentAs(today) ? Color(0xFF0EA5E9) : Color(0xFF059669)
-                                  ),
-                                  SizedBox(width: 4),
-                                  Expanded(
-                                    child: Text(
-                                      'Planned Start',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          color: startDate.isAtSameMomentAs(today) ? Color(0xFF0EA5E9) : Color(0xFF6B7280)
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
+                              Icon(
+                                  startDate.isAtSameMomentAs(today) ? Icons.today : Icons.play_arrow,
+                                  size: 16,
+                                  color: startDate.isAtSameMomentAs(today) ? Color(0xFF0EA5E9) : Color(0xFF059669)
                               ),
-                              SizedBox(height: 4),
-                              Text(
-                                DateFormat('MMM dd, yyyy').format(startDate),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                  color: startDate.isAtSameMomentAs(today) ? Color(0xFF0C4A6E) : Color(0xFF111827),
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              if (startDate.isAtSameMomentAs(today)) ...[
-                                SizedBox(height: 2),
-                                Text(
-                                  'Today',
+                              SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  'Start Date',
                                   style: TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFF0EA5E9),
-                                    fontWeight: FontWeight.w500,
+                                      fontSize: 12,
+                                      color: startDate.isAtSameMomentAs(today) ? Color(0xFF0EA5E9) : Color(0xFF6B7280)
                                   ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                              ],
+                              ),
                             ],
                           ),
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      Expanded(
-                        child: Container(
-                          padding: EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: isDueToday
-                                ? Color(0xFFFEF3C7)
-                                : (isOverdue ? Color(0xFFFEE2E2) : Color(0xFFF9FAFB)),
-                            borderRadius: BorderRadius.circular(8),
-                            border: isDueToday || isOverdue
-                                ? Border.all(
-                                color: isDueToday
-                                    ? Color(0xFFF59E0B).withOpacity(0.3)
-                                    : Color(0xFFDC2626).withOpacity(0.3)
-                            )
-                                : null,
+                          SizedBox(height: 4),
+                          Text(
+                            DateFormat('MMM dd, yyyy').format(startDate),
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                              color: startDate.isAtSameMomentAs(today) ? Color(0xFF0C4A6E) : Color(0xFF111827),
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                    isDueToday ? Icons.today : (isOverdue ? Icons.warning : Icons.flag),
-                                    size: 16,
-                                    color: isDueToday ? Color(0xFFF59E0B) : (isOverdue ? Color(0xFFDC2626) : Color(0xFF6B7280)),
-                                  ),
-                                  SizedBox(width: 4),
-                                  Expanded(
-                                    child: Text(
-                                      'Planned End',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          color: isDueToday ? Color(0xFFF59E0B) : (isOverdue ? Color(0xFFDC2626) : Color(0xFF6B7280))
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              SizedBox(height: 4),
-                              Text(
-                                DateFormat('MMM dd, yyyy').format(dueDate),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                  color: isDueToday ? Color(0xFF92400E) : (isOverdue ? Color(0xFFDC2626) : Color(0xFF111827)),
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              if (isDueToday) ...[
-                                SizedBox(height: 2),
-                                Text(
-                                  'Today',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFFF59E0B),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ] else if (isOverdue) ...[
-                                SizedBox(height: 2),
-                                Text(
-                                  'Overdue',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFFDC2626),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
-
-                  SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          padding: EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: actualStartDate != null ? Color(0xFFE0F2FE) : Color(0xFFF9FAFB),
-                            borderRadius: BorderRadius.circular(8),
-                            border: actualStartDate != null
-                                ? Border.all(color: Color(0xFF0EA5E9).withOpacity(0.3))
-                                : Border.all(color: Colors.grey.withOpacity(0.3)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Container(
+                      padding: EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isDueToday
+                            ? Color(0xFFFEF3C7)
+                            : (isOverdue ? Color(0xFFFEE2E2) : Color(0xFFF9FAFB)),
+                        borderRadius: BorderRadius.circular(8),
+                        border: isDueToday || isOverdue
+                            ? Border.all(
+                            color: isDueToday
+                                ? Color(0xFFF59E0B).withOpacity(0.3)
+                                : Color(0xFFDC2626).withOpacity(0.3)
+                        )
+                            : null,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
                             children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                      Icons.schedule,
-                                      size: 16,
-                                      color: actualStartDate != null ? Color(0xFF0EA5E9) : Color(0xFF6B7280)
-                                  ),
-                                  SizedBox(width: 4),
-                                  Expanded(
-                                    child: Text(
-                                      'Actual Start',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          color: actualStartDate != null ? Color(0xFF0EA5E9) : Color(0xFF6B7280)
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
+                              Icon(
+                                isDueToday ? Icons.today : (isOverdue ? Icons.warning : Icons.flag),
+                                size: 16,
+                                color: isDueToday ? Color(0xFFF59E0B) : (isOverdue ? Color(0xFFDC2626) : Color(0xFF6B7280)),
                               ),
-                              SizedBox(height: 4),
-                              Text(
-                                actualStartDate != null
-                                    ? DateFormat('MMM dd, yyyy').format(actualStartDate)
-                                    : 'Not started',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                  color: actualStartDate != null ? Color(0xFF0C4A6E) : Color(0xFF6B7280),
+                              SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  'Due Date',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: isDueToday ? Color(0xFFF59E0B) : (isOverdue ? Color(0xFFDC2626) : Color(0xFF6B7280))
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                overflow: TextOverflow.ellipsis,
                               ),
                             ],
                           ),
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      Expanded(
-                        child: Container(
-                          padding: EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: actualEndDate != null ? Color(0xFFD1FAE5) : Color(0xFFF9FAFB),
-                            borderRadius: BorderRadius.circular(8),
-                            border: actualEndDate != null
-                                ? Border.all(color: Color(0xFF059669).withOpacity(0.3))
-                                : Border.all(color: Colors.grey.withOpacity(0.3)),
+                          SizedBox(height: 4),
+                          Text(
+                            DateFormat('MMM dd, yyyy').format(dueDate),
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                              color: isDueToday ? Color(0xFF92400E) : (isOverdue ? Color(0xFFDC2626) : Color(0xFF111827)),
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                      Icons.check_circle,
-                                      size: 16,
-                                      color: actualEndDate != null ? Color(0xFF059669) : Color(0xFF6B7280)
-                                  ),
-                                  SizedBox(width: 4),
-                                  Expanded(
-                                    child: Text(
-                                      'Actual End',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          color: actualEndDate != null ? Color(0xFF059669) : Color(0xFF6B7280)
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              SizedBox(height: 4),
-                              Text(
-                                actualEndDate != null
-                                    ? DateFormat('MMM dd, yyyy').format(actualEndDate)
-                                    : 'Not completed',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                  color: actualEndDate != null ? Color(0xFF065F46) : Color(0xFF6B7280),
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
                 ],
               ),
 
-              if (submissionText != null) ...[
-                SizedBox(height: 16),
-                Container(
-                  padding: EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Color(0xFFD1FAE5),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Color(0xFF059669).withOpacity(0.2)),
+              SizedBox(height: 16),
+
+              // Show assigned employees for managers or individual submission for employees
+              if (widget.isManager) ...[
+                _buildAssignedEmployeesDisplay(),
+              ] else if (currentUserData != null) ...[
+                // Show individual employee's submission text if completed
+                if (currentUserData!['submissionText'] != null) ...[
+                  Container(
+                    padding: EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Color(0xFFD1FAE5),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Color(0xFF059669).withOpacity(0.2)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.check_circle, size: 16, color: Color(0xFF059669)),
+                            SizedBox(width: 4),
+                            Text('Your Submission', style: TextStyle(fontSize: 12, color: Color(0xFF059669), fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          currentUserData!['submissionText'],
+                          style: TextStyle(color: Color(0xFF065F46), fontSize: 14),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 3,
+                        ),
+                      ],
+                    ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.check_circle, size: 16, color: Color(0xFF059669)),
-                          SizedBox(width: 4),
-                          Text('Submission', style: TextStyle(fontSize: 12, color: Color(0xFF059669), fontWeight: FontWeight.w600)),
-                        ],
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        submissionText,
-                        style: TextStyle(color: Color(0xFF065F46), fontSize: 14),
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 3,
-                      ),
-                    ],
-                  ),
-                ),
+                  SizedBox(height: 12),
+                ],
               ],
 
+              // Show delay reasons if overdue
               if (isOverdue && delayReasons.isNotEmpty) ...[
-                SizedBox(height: 12),
                 Container(
                   padding: EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -1756,11 +1846,11 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                     ],
                   ),
                 ),
+                SizedBox(height: 12),
               ],
 
-              // Show manager name for employees - moved to bottom after submission and delay reasons
+              // Show manager info for employees
               if (!widget.isManager && assignedBy != null) ...[
-                SizedBox(height: 16),
                 Container(
                   padding: EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -1835,12 +1925,12 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                     },
                   ),
                 ),
+                SizedBox(height: 16),
               ],
 
-              // Enhanced action buttons for employees
-              if (!widget.isManager) ...[
-                SizedBox(height: 16),
-                if (needsDelayReason && status != 'assigned') ...[
+              // Employee action buttons
+              if (!widget.isManager && currentUserId != null) ...[
+                if (needsDelayReason && currentUserStatus != 'assigned') ...[
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
@@ -1869,9 +1959,9 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                       ),
                     ),
                   ),
-                ] else if (status == 'assigned') ...[
+                ] else if (currentUserStatus == 'assigned') ...[
                   _buildSlideToStart(),
-                ] else if (status == 'in_progress') ...[
+                ] else if (currentUserStatus == 'in_progress') ...[
                   Row(
                     children: [
                       Expanded(
@@ -1903,11 +1993,11 @@ class _TaskCardWidgetState extends State<TaskCardWidget> with TickerProviderStat
                       ),
                     ],
                   ),
-                ] else if (status == 'hold') ...[
+                ] else if (currentUserStatus == 'hold') ...[
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
-                      onPressed: () => _startTask(widget.docId),
+                      onPressed: () => _updateIndividualStatus(widget.docId, 'in_progress'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Color(0xFF3B82F6),
                         foregroundColor: Colors.white,

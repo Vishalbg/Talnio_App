@@ -22,14 +22,17 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
   final TextEditingController descController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
   final TextEditingController _filterEmployeeSearchController = TextEditingController();
-  String? selectedEmployeeUid;
+
+  // Changed from single selectedEmployeeUid to multiple selected employees
+  List<String> selectedEmployeeUids = [];
   String? selectedFilterEmployeeUid;
+
   DateTime? startDate;
   DateTime? endDate;
   DateTime selectedFilterDate = DateTime.now();
   TabController? _tabController;
   String selectedStatusFilter = 'all';
-  bool showTodayTasksOnly = false; // Changed to false by default
+  bool showTodayTasksOnly = false;
   bool _isAddingTask = false;
   bool _isEmployeeSelectorExpanded = false;
   bool _isFilterEmployeeSelectorExpanded = false;
@@ -140,6 +143,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
     }
   }
 
+  // Updated to support multiple employees
   Future<void> _assignTask() async {
     if (titleController.text.isEmpty ||
         descController.text.isEmpty ||
@@ -177,19 +181,21 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
       final managerData = managerDoc.data() as Map<String, dynamic>;
       final managerName = managerData['name'] ?? 'Manager';
 
-      String? employeeEmail;
-      String? employeeName;
+      List<Map<String, dynamic>> assignedEmployees = [];
+      List<String> employeeEmails = [];
+      List<String> employeeNames = [];
 
-      if (selectedEmployeeUid != null) {
+      // Create assignedEmployees array
+      for (String employeeUid in selectedEmployeeUids) {
         final employeeDoc = await FirebaseFirestore.instance
             .collection('users')
-            .doc(selectedEmployeeUid)
+            .doc(employeeUid)
             .get();
 
         if (!employeeDoc.exists || (employeeDoc.data() as Map<String, dynamic>)['managerId'] != currentUserId) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Selected employee is not under your management'),
+              content: Text('One or more selected employees are not under your management'),
               backgroundColor: Colors.red[400],
             ),
           );
@@ -200,62 +206,65 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
         }
 
         final employeeData = employeeDoc.data() as Map<String, dynamic>;
-        employeeEmail = employeeData['email'];
-        employeeName = employeeData['name'];
+        final employeeName = employeeData['name'] ?? 'Unknown';
+        final employeeEmail = employeeData['email'] ?? '';
+
+        assignedEmployees.add({
+          'employeeId': employeeUid,
+          'employeeName': employeeName,
+          'employeeEmail': employeeEmail,
+          'status': 'assigned',
+          'actualStartDate': null,
+          'actualEndDate': null,
+          'submissionText': null,
+        });
+
+        employeeEmails.add(employeeEmail);
+        employeeNames.add(employeeName);
       }
+
+      // Calculate overall status
+      String overallStatus = selectedEmployeeUids.isEmpty ? 'unassigned' : 'assigned';
 
       await FirebaseFirestore.instance.collection('tasks').doc(Uuid().v4()).set({
         'title': titleController.text.trim(),
         'description': descController.text.trim(),
-        'assignedTo': selectedEmployeeUid,
+        'assignedEmployees': assignedEmployees,
         'assignedBy': currentUserId,
-        'status': selectedEmployeeUid != null ? 'assigned' : 'unassigned',
+        'status': overallStatus, // Keep for backward compatibility
+        'overallStatus': overallStatus,
         'startDate': startDate!.toIso8601String().split('T')[0],
         'dueDate': endDate!.toIso8601String().split('T')[0],
-        'actualStartDate': null,
-        'actualEndDate': null,
         'createdAt': FieldValue.serverTimestamp(),
         'delayReasons': [],
         'lastDelayReasonDate': null,
       });
 
-      if (selectedEmployeeUid != null && employeeEmail != null && employeeName != null) {
-        final emailSent = await EmailService.sendTaskAssignmentEmail(
-          employeeEmail: employeeEmail,
-          employeeName: employeeName,
-          taskTitle: titleController.text.trim(),
-          taskDescription: descController.text.trim(),
-          dueDate: DateFormat('MMM dd, yyyy').format(endDate!),
-          managerName: managerName,
-        );
-
-        if (emailSent) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  Icon(Icons.check_circle, color: Colors.white),
-                  SizedBox(width: 8),
-                  Expanded(child: Text('Task assigned and email notification sent successfully')),
-                ],
-              ),
-              backgroundColor: Colors.green[500],
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  Icon(Icons.warning, color: Colors.white),
-                  SizedBox(width: 8),
-                  Expanded(child: Text('Task assigned but email notification failed')),
-                ],
-              ),
-              backgroundColor: Colors.orange[500],
-            ),
+      // Send emails to all assigned employees
+      if (assignedEmployees.isNotEmpty) {
+        for (int i = 0; i < employeeEmails.length; i++) {
+          await EmailService.sendTaskAssignmentEmail(
+            employeeEmail: employeeEmails[i],
+            employeeName: employeeNames[i],
+            taskTitle: titleController.text.trim(),
+            taskDescription: descController.text.trim(),
+            dueDate: DateFormat('MMM dd, yyyy').format(endDate!),
+            managerName: managerName,
           );
         }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 8),
+                Expanded(child: Text('Task assigned to ${assignedEmployees.length} employee(s) successfully')),
+              ],
+            ),
+            backgroundColor: Colors.green[500],
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -263,7 +272,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
               children: [
                 Icon(Icons.check_circle, color: Colors.white),
                 SizedBox(width: 8),
-                Text(selectedEmployeeUid != null ? 'Task assigned successfully' : 'Unassigned task created successfully'),
+                Text('Unassigned task created successfully'),
               ],
             ),
             backgroundColor: Colors.green[500],
@@ -274,7 +283,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
       titleController.clear();
       descController.clear();
       setState(() {
-        selectedEmployeeUid = null;
+        selectedEmployeeUids.clear();
         startDate = null;
         endDate = null;
         _isEmployeeSelectorExpanded = false;
@@ -348,6 +357,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
     );
   }
 
+  // Updated employee selector for multiple selection
   Widget _buildEmployeeSelector() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -357,7 +367,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
           children: [
             Expanded(
               child: Text(
-                'Assign to Employee ${selectedEmployeeUid != null ? "(1 selected)" : "(Optional)"}',
+                'Assign to Employees ${selectedEmployeeUids.isNotEmpty ? "(${selectedEmployeeUids.length} selected)" : "(Optional)"}',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
@@ -391,7 +401,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
         SizedBox(height: 8),
 
         if (_isEmployeeSelectorExpanded) ...[
-          // Search bar with icon - only show when search is enabled
+          // Search bar with icon
           Row(
             children: [
               if (!_isSearchEnabled) ...[
@@ -408,7 +418,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
                         Icon(Icons.people, color: Color(0xFF6B7280), size: 20),
                         SizedBox(width: 12),
                         Text(
-                          'Select an employee to assign',
+                          'Select employees to assign',
                           style: TextStyle(
                             color: Color(0xFF6B7280),
                             fontSize: 14,
@@ -423,10 +433,6 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
                   onPressed: () {
                     setState(() {
                       _isSearchEnabled = true;
-                    });
-                    // Focus the search field after a brief delay
-                    Future.delayed(Duration(milliseconds: 100), () {
-                      FocusScope.of(context).requestFocus(FocusNode());
                     });
                   },
                   icon: Icon(Icons.search, color: Color(0xFF2563EB)),
@@ -470,41 +476,13 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
           SizedBox(height: 12),
         ],
 
-        if (!_isEmployeeSelectorExpanded && selectedEmployeeUid != null && _employeesLoaded) ...[
-          _buildSelectedEmployeeChip(),
+        // Show selected employees when collapsed
+        if (!_isEmployeeSelectorExpanded && selectedEmployeeUids.isNotEmpty && _employeesLoaded) ...[
+          _buildSelectedEmployeeChips(),
           SizedBox(height: 8),
         ],
 
-        if (!_isEmployeeSelectorExpanded && selectedEmployeeUid != null && !_employeesLoaded) ...[
-          Container(
-            padding: EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Color(0xFFE0F2FE),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Color(0xFF3B82F6).withOpacity(0.3)),
-            ),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 32,
-                  height: 32,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
-                  ),
-                ),
-                SizedBox(width: 12),
-                Text(
-                  'Loading employee...',
-                  style: TextStyle(color: Color(0xFF1E40AF)),
-                ),
-              ],
-            ),
-          ),
-          SizedBox(height: 8),
-        ],
-
-        if (!_isEmployeeSelectorExpanded && selectedEmployeeUid == null) ...[
+        if (!_isEmployeeSelectorExpanded && selectedEmployeeUids.isEmpty) ...[
           Container(
             padding: EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -542,30 +520,39 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
             ),
             child: Column(
               children: [
+                // Select All / Deselect All button
                 Container(
                   decoration: BoxDecoration(
-                    color: selectedEmployeeUid == null ? Color(0xFFE0F2FE) : null,
+                    color: Color(0xFFF8FAFC),
                     border: Border(bottom: BorderSide(color: Colors.grey[200]!)),
                   ),
                   child: ListTile(
-                    leading: CircleAvatar(
-                      radius: 20,
-                      backgroundColor: Colors.grey[400],
-                      child: Icon(Icons.person_off, color: Colors.white, size: 20),
+                    leading: Icon(
+                      selectedEmployeeUids.length == _filteredEmployees.length && _filteredEmployees.isNotEmpty
+                          ? Icons.check_box
+                          : (selectedEmployeeUids.isEmpty ? Icons.check_box_outline_blank : Icons.indeterminate_check_box),
+                      color: Color(0xFF2563EB),
                     ),
                     title: Text(
-                      'Unassigned',
+                      selectedEmployeeUids.length == _filteredEmployees.length && _filteredEmployees.isNotEmpty
+                          ? 'Deselect All'
+                          : 'Select All',
                       style: TextStyle(
-                        fontWeight: selectedEmployeeUid == null ? FontWeight.w600 : FontWeight.normal,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF2563EB),
                       ),
                     ),
-                    subtitle: Text('Leave task unassigned'),
-                    trailing: selectedEmployeeUid == null
-                        ? Icon(Icons.check_circle, color: Color(0xFF2563EB))
-                        : null,
+                    subtitle: Text('${selectedEmployeeUids.length} of ${_filteredEmployees.length} selected'),
                     onTap: () {
                       setState(() {
-                        selectedEmployeeUid = null;
+                        if (selectedEmployeeUids.length == _filteredEmployees.length && _filteredEmployees.isNotEmpty) {
+                          selectedEmployeeUids.clear();
+                        } else {
+                          selectedEmployeeUids.clear();
+                          for (var employee in _filteredEmployees) {
+                            selectedEmployeeUids.add(employee.id);
+                          }
+                        }
                       });
                     },
                   ),
@@ -591,10 +578,11 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
                       final employeeId = employee.id;
                       final employeeName = employeeData['name'] ?? 'Unknown';
                       final employeeEmail = employeeData['email'] ?? '';
+                      final isSelected = selectedEmployeeUids.contains(employeeId);
 
                       return Container(
                         decoration: BoxDecoration(
-                          color: selectedEmployeeUid == employeeId ? Color(0xFFE0F2FE) : null,
+                          color: isSelected ? Color(0xFFE0F2FE) : null,
                           border: Border(bottom: BorderSide(color: Colors.grey[100]!)),
                         ),
                         child: ListTile(
@@ -609,7 +597,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
                           title: Text(
                             employeeName,
                             style: TextStyle(
-                              fontWeight: selectedEmployeeUid == employeeId ? FontWeight.w600 : FontWeight.normal,
+                              fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                             ),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -617,12 +605,17 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
                             employeeEmail,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          trailing: selectedEmployeeUid == employeeId
-                              ? Icon(Icons.check_circle, color: Color(0xFF2563EB))
-                              : null,
+                          trailing: Icon(
+                            isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
+                            color: isSelected ? Color(0xFF2563EB) : Colors.grey[400],
+                          ),
                           onTap: () {
                             setState(() {
-                              selectedEmployeeUid = employeeId;
+                              if (isSelected) {
+                                selectedEmployeeUids.remove(employeeId);
+                              } else {
+                                selectedEmployeeUids.add(employeeId);
+                              }
                             });
                           },
                         ),
@@ -638,85 +631,66 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildSelectedEmployeeChip() {
-    DocumentSnapshot? selectedEmployee;
-    try {
-      selectedEmployee = _allEmployees.firstWhere((emp) => emp.id == selectedEmployeeUid);
-    } catch (e) {
-      return Container(
-        padding: EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.grey[100],
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.grey[300]!),
-        ),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 16,
-              backgroundColor: Colors.grey[400],
-              child: Icon(Icons.person_off, color: Colors.white, size: 16),
-            ),
-            SizedBox(width: 12),
-            Text(
-              'No employee assigned',
-              style: TextStyle(
-                color: Colors.grey[600],
-                fontStyle: FontStyle.italic,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
+  // Updated to show multiple selected employees
+  Widget _buildSelectedEmployeeChips() {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: selectedEmployeeUids.map((employeeId) {
+        try {
+          final selectedEmployee = _allEmployees.firstWhere((emp) => emp.id == employeeId);
+          final employeeData = selectedEmployee.data() as Map<String, dynamic>;
+          final employeeName = employeeData['name'] ?? 'Unknown';
 
-    final employeeData = selectedEmployee.data() as Map<String, dynamic>;
-    final employeeName = employeeData['name'] ?? 'Unknown';
-
-    return Container(
-      padding: EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Color(0xFFE0F2FE),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Color(0xFF3B82F6).withOpacity(0.3)),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: Color(0xFF2563EB),
-            child: Text(
-              employeeName.isNotEmpty ? employeeName[0].toUpperCase() : 'U',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+          return Container(
+            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Color(0xFFE0F2FE),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Color(0xFF3B82F6).withOpacity(0.3)),
             ),
-          ),
-          SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              employeeName,
-              style: TextStyle(
-                color: Color(0xFF1E40AF),
-                fontWeight: FontWeight.w500,
-              ),
-              overflow: TextOverflow.ellipsis,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 12,
+                  backgroundColor: Color(0xFF2563EB),
+                  child: Text(
+                    employeeName.isNotEmpty ? employeeName[0].toUpperCase() : 'U',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10),
+                  ),
+                ),
+                SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    employeeName,
+                    style: TextStyle(
+                      color: Color(0xFF1E40AF),
+                      fontWeight: FontWeight.w500,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      selectedEmployeeUids.remove(employeeId);
+                    });
+                  },
+                  child: Icon(Icons.close, size: 16, color: Color(0xFF6B7280)),
+                ),
+              ],
             ),
-          ),
-          IconButton(
-            onPressed: () {
-              setState(() {
-                selectedEmployeeUid = null;
-              });
-            },
-            icon: Icon(Icons.close, size: 16, color: Color(0xFF6B7280)),
-            constraints: BoxConstraints(minWidth: 32, minHeight: 32),
-            padding: EdgeInsets.all(4),
-          ),
-        ],
-      ),
+          );
+        } catch (e) {
+          return Container();
+        }
+      }).toList(),
     );
   }
 
-  // Compact filter employee selector to prevent overflow
+  // Filter employee selector remains the same
   Widget _buildFilterEmployeeSelector() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -786,7 +760,6 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
 
         if (_isFilterEmployeeSelectorExpanded) ...[
           SizedBox(height: 8),
-          // Search functionality for filter
           Row(
             children: [
               if (!_isFilterSearchEnabled) ...[
@@ -866,14 +839,13 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
           SizedBox(height: 8),
 
           Container(
-            height: 150, // Reduced height to prevent overflow
+            height: 150,
             decoration: BoxDecoration(
               border: Border.all(color: Colors.grey[300]!),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Column(
               children: [
-                // All Employees option
                 Container(
                   decoration: BoxDecoration(
                     color: selectedFilterEmployeeUid == null ? Color(0xFFE0F2FE) : null,
@@ -905,7 +877,6 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
                     },
                   ),
                 ),
-                // Employee list
                 Expanded(
                   child: _filteredFilterEmployees.isEmpty
                       ? Center(
@@ -1026,7 +997,7 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
                         ),
                       ),
                       Text(
-                        'Create tasks and assign to team members or leave unassigned',
+                        'Create tasks and assign to multiple team members or leave unassigned',
                         style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 14),
                       ),
                     ],
@@ -1229,14 +1200,12 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
           ],
         ),
         children: [
-          // Wrapped in SingleChildScrollView to prevent overflow
           SingleChildScrollView(
             child: Padding(
               padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Employee dropdown selector
                   StreamBuilder<QuerySnapshot>(
                     stream: FirebaseFirestore.instance
                         .collection('users')
@@ -1265,7 +1234,6 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
 
                   SizedBox(height: 12),
 
-                  // Status filter and clear button in one row
                   Row(
                     children: [
                       Expanded(
@@ -1355,7 +1323,6 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
     );
   }
 
-  // Updated helper method to count active filters
   int _getActiveFilterCount() {
     int count = 0;
     if (selectedStatusFilter != 'all') count++;
@@ -1379,17 +1346,20 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
     return query.orderBy('dueDate', descending: false).snapshots();
   }
 
+  // Updated to work with new assignedEmployees structure
   Stream<QuerySnapshot> _getEmployeeFilteredTasksStream(String userId) {
+    // Use a simpler approach - get all tasks and filter in the app
+    // This is more reliable than complex array_contains queries
     Query query = FirebaseFirestore.instance
         .collection('tasks')
-        .where('assignedTo', isEqualTo: userId);
+        .orderBy('dueDate', descending: false);
 
     if (showTodayTasksOnly) {
       final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
       query = query.where('dueDate', isEqualTo: today);
     }
 
-    return query.orderBy('dueDate', descending: false).snapshots();
+    return query.snapshots();
   }
 
   Widget _buildViewTasksTab() {
@@ -1674,16 +1644,39 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
 
               final filteredDocs = snapshot.data!.docs.where((doc) {
                 final data = doc.data() as Map<String, dynamic>;
-                final status = data['status']?.toString() ?? 'assigned';
+                final assignedEmployees = data['assignedEmployees'] as List<dynamic>? ?? [];
 
-                if (selectedStatusFilter != 'all' && status != selectedStatusFilter) {
+                // Check if current user is assigned to this task (new structure)
+                bool isUserAssigned = false;
+                String userStatus = 'assigned';
+
+                // First check new assignedEmployees structure
+                for (var employee in assignedEmployees) {
+                  if (employee['employeeId'] == user.uid) {
+                    isUserAssigned = true;
+                    userStatus = employee['status'] ?? 'assigned';
+                    break;
+                  }
+                }
+
+                // Fallback to old assignedTo structure for backward compatibility
+                if (!isUserAssigned && data['assignedTo'] == user.uid) {
+                  isUserAssigned = true;
+                  userStatus = data['status'] ?? 'assigned';
+                }
+
+                // Only include tasks assigned to current user
+                if (!isUserAssigned) {
+                  return false;
+                }
+
+                if (selectedStatusFilter != 'all' && userStatus != selectedStatusFilter) {
                   return false;
                 }
 
                 return data['title'] != null &&
                     data['startDate'] != null &&
-                    data['dueDate'] != null &&
-                    data['status'] != null;
+                    data['dueDate'] != null;
               }).toList();
 
               if (filteredDocs.isEmpty) {
@@ -1733,7 +1726,6 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
     );
   }
 
-  // Helper method for employee filter count
   int _getEmployeeActiveFilterCount() {
     int count = 0;
     if (selectedStatusFilter != 'all') count++;
@@ -1765,29 +1757,29 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
     if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
       return Center(
         child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-        Container(
-        padding: EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Color(0xFFF9FAFB),
-          shape: BoxShape.circle,
-        ),
-        child: Icon(Icons.task_alt, size: 64, color: Color(0xFF9CA3AF)),
-      ),
-    SizedBox(height: 16),
-    Text(
-    'No tasks found',
-    style: TextStyle(color: Color(0xFF6B7280), fontSize: 18, fontWeight: FontWeight.w600),
-    ),
-    SizedBox(height: 8),
-    Text(
-    showTodayTasksOnly
-    ? 'No tasks due today'
-        : 'Try adjusting the filters or create new tasks',
-    style: TextStyle(color: Color              (0xFF9CA3AF), fontSize: 14),
-    ),
-            ],
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Color(0xFFF9FAFB),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.task_alt, size: 64, color: Color(0xFF9CA3AF)),
+            ),
+            SizedBox(height: 16),
+            Text(
+              'No tasks found',
+              style: TextStyle(color: Color(0xFF6B7280), fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+            SizedBox(height: 8),
+            Text(
+              showTodayTasksOnly
+                  ? 'No tasks due today'
+                  : 'Try adjusting the filters or create new tasks',
+              style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 14),
+            ),
+          ],
         ),
       );
     }
@@ -1795,25 +1787,31 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
     // Apply filters to the results
     final filteredDocs = snapshot.data!.docs.where((doc) {
       final data = doc.data() as Map<String, dynamic>;
-      final status = data['status']?.toString() ?? 'assigned';
+      final overallStatus = data['overallStatus']?.toString() ?? data['status']?.toString() ?? 'assigned';
+      final assignedEmployees = data['assignedEmployees'] as List<dynamic>? ?? [];
 
       // Apply status filter
-      if (selectedStatusFilter != 'all' && status != selectedStatusFilter) {
+      if (selectedStatusFilter != 'all' && overallStatus != selectedStatusFilter) {
         return false;
       }
 
       // Apply employee filter
       if (selectedFilterEmployeeUid != null) {
-        final assignedTo = data['assignedTo']?.toString();
-        if (assignedTo != selectedFilterEmployeeUid) {
+        bool employeeFound = false;
+        for (var employee in assignedEmployees) {
+          if (employee['employeeId'] == selectedFilterEmployeeUid) {
+            employeeFound = true;
+            break;
+          }
+        }
+        if (!employeeFound) {
           return false;
         }
       }
 
       return data['title'] != null &&
           data['startDate'] != null &&
-          data['dueDate'] != null &&
-          data['status'] != null;
+          data['dueDate'] != null;
     }).toList();
 
     if (filteredDocs.isEmpty) {
@@ -1844,117 +1842,18 @@ class _TaskScreenState extends State<TaskScreen> with SingleTickerProviderStateM
       );
     }
 
-    return FutureBuilder<List<Widget>>(
-      future: _buildTaskWidgets(filteredDocs),
-      builder: (context, widgetSnapshot) {
-        if (widgetSnapshot.connectionState == ConnectionState.waiting) {
-          return Center(child: CircularProgressIndicator(color: Color(0xFF2563EB)));
-        }
-
-        if (widgetSnapshot.hasError) {
-          return Center(
-            child: Text(
-              'Error building task list: ${widgetSnapshot.error}',
-              style: TextStyle(color: Colors.red),
-            ),
-          );
-        }
-
-        final taskWidgets = widgetSnapshot.data ?? [];
-
-        if (taskWidgets.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  padding: EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    color: Color(0xFFF9FAFB),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(Icons.task_alt, size: 64, color: Color(0xFF9CA3AF)),
-                ),
-                SizedBox(height: 16),
-                Text(
-                  'No tasks match the employee filter',
-                  style: TextStyle(color: Color(0xFF6B7280), fontSize: 18, fontWeight: FontWeight.w600),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  'Try selecting a different employee or clear filters',
-                  style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 14),
-                ),
-              ],
-            ),
-          );
-        }
-
-        return ListView(
-          padding: EdgeInsets.all(24.0),
-          children: taskWidgets,
+    return ListView(
+      padding: EdgeInsets.all(24.0),
+      children: filteredDocs.map((doc) {
+        final data = doc.data() as Map<String, dynamic>;
+        return TaskCardWidget(
+          data: data,
+          docId: doc.id,
+          isManager: widget.isManager,
+          onRefresh: () => setState(() {}),
         );
-      },
+      }).toList(),
     );
-  }
-
-  Future<List<Widget>> _buildTaskWidgets(List<QueryDocumentSnapshot> docs) async {
-    List<Widget> widgets = [];
-
-    for (final doc in docs) {
-      final data = doc.data() as Map<String, dynamic>;
-      final status = data['status']?.toString() ?? 'assigned';
-
-      // For unassigned tasks, show directly without employee lookup
-      if (data['assignedTo'] == null) {
-        widgets.add(TaskCardWidget(
-          data: data,
-          docId: doc.id,
-          isManager: widget.isManager,
-          employeeName: null, // Unassigned
-          onRefresh: () => setState(() {}),
-          showEditButton: status != 'completed',
-        ));
-        continue;
-      }
-
-      // For assigned tasks, get employee details
-      try {
-        final userDoc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(data['assignedTo'])
-            .get();
-
-        if (!userDoc.exists) {
-          continue; // Skip if employee doesn't exist
-        }
-
-        final userData = userDoc.data() as Map<String, dynamic>?;
-        final employeeName = userData?['name']?.toString() ?? 'Unknown Employee';
-
-        widgets.add(TaskCardWidget(
-          data: data,
-          docId: doc.id,
-          isManager: widget.isManager,
-          employeeName: employeeName,
-          onRefresh: () => setState(() {}),
-          showEditButton: status != 'completed',
-        ));
-      } catch (e) {
-        print('Error loading employee data: $e');
-        // Still show the task even if employee data fails to load
-        widgets.add(TaskCardWidget(
-          data: data,
-          docId: doc.id,
-          isManager: widget.isManager,
-          employeeName: 'Unknown Employee',
-          onRefresh: () => setState(() {}),
-          showEditButton: status != 'completed',
-        ));
-      }
-    }
-
-    return widgets;
   }
 
   @override
