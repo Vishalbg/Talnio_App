@@ -5,11 +5,10 @@ import 'package:provider/provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:device_info_plus/device_info_plus.dart';
 import 'auth_provider.dart';
 import 'dart:io';
+// Import the new package for opening files
+import 'package:open_file_plus/open_file_plus.dart';
 
 class ReportScreen extends StatefulWidget {
   @override
@@ -27,7 +26,7 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
   void initState() {
     super.initState();
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    if (authProvider.role == 'manager') {
+    if (authProvider.role == 'manager' || authProvider.role == 'admin') {
       _tabController = TabController(length: 2, vsync: this);
     }
   }
@@ -117,43 +116,8 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
     }
   }
 
-  Future<bool> _requestStoragePermission() async {
-    if (Platform.isAndroid) {
-      final androidInfo = await DeviceInfoPlugin().androidInfo;
-      final sdkInt = androidInfo.version.sdkInt;
-
-      if (sdkInt >= 33) {
-        var status = await Permission.manageExternalStorage.status;
-        if (!status.isGranted) {
-          status = await Permission.manageExternalStorage.request();
-          if (!status.isGranted) {
-            var photosStatus = await Permission.photos.request();
-            var videosStatus = await Permission.videos.request();
-            return photosStatus.isGranted || videosStatus.isGranted;
-          }
-        }
-        return status.isGranted;
-      } else if (sdkInt >= 30) {
-        var manageStatus = await Permission.manageExternalStorage.status;
-        if (!manageStatus.isGranted) {
-          manageStatus = await Permission.manageExternalStorage.request();
-          if (manageStatus.isGranted) return true;
-        }
-        var storageStatus = await Permission.storage.status;
-        if (!storageStatus.isGranted) {
-          storageStatus = await Permission.storage.request();
-        }
-        return storageStatus.isGranted;
-      } else {
-        var status = await Permission.storage.status;
-        if (!status.isGranted) {
-          status = await Permission.storage.request();
-        }
-        return status.isGranted;
-      }
-    }
-    return true;
-  }
+  // This function is no longer needed as we don't require special storage permissions.
+  // Future<bool> _requestStoragePermission() async { ... }
 
   void _showDownloadOptions() {
     showModalBottomSheet(
@@ -339,28 +303,41 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
     );
   }
 
+  // UPDATED: New function to save the file and open it.
+  Future<void> _saveAndOpenFile(List<int> bytes, String fileName) async {
+    try {
+      // Get the public downloads directory using the correct modern method.
+      final Directory? directory = await getDownloadsDirectory();
+
+      if (directory == null) {
+        throw Exception("Could not get the downloads directory.");
+      }
+
+      final String filePath = '${directory.path}/$fileName';
+      final File file = File(filePath);
+
+      // Write the file bytes.
+      await file.writeAsBytes(bytes, flush: true);
+
+      // Open the file.
+      final OpenResult result = await OpenFile.open(filePath);
+
+      if (result.type != ResultType.done) {
+        throw Exception('Could not open the file: ${result.message}');
+      }
+    } catch (e) {
+      rethrow; // Rethrow the exception to be caught in _downloadReport
+    }
+  }
+
+  // UPDATED: This function now uses the new save method.
   Future<void> _downloadReport(int months) async {
     setState(() {
       isDownloading = true;
     });
 
     try {
-      bool hasPermission = await _requestStoragePermission();
-      if (!hasPermission) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Storage permission is required to download the report. Please grant permission in Settings.'),
-              action: SnackBarAction(
-                label: 'Settings',
-                onPressed: () => openAppSettings(),
-              ),
-            ),
-          );
-        }
-        return;
-      }
-
+      // We no longer need to request storage permission here.
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
       final currentUserId = fa.FirebaseAuth.instance.currentUser?.uid;
       if (currentUserId == null) {
@@ -382,7 +359,6 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
       List<QueryDocumentSnapshot<Map<String, dynamic>>> reportDocs = [];
 
       if (authProvider.role != 'admin') {
-        // Fetch employee IDs for the manager
         final userQuery = await FirebaseFirestore.instance
             .collection('users')
             .where('managerId', isEqualTo: currentUserId)
@@ -398,7 +374,6 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
           return;
         }
 
-        // Split employee IDs into chunks of 10 due to Firestore whereIn limit
         const int chunkSize = 10;
         for (int i = 0; i < employeeIds.length; i += chunkSize) {
           final chunk = employeeIds.sublist(
@@ -425,7 +400,6 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
           }
         }
       } else {
-        // For admins, fetch all records
         try {
           final querySnapshot = await FirebaseFirestore.instance
               .collection('reports')
@@ -453,7 +427,6 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
         return;
       }
 
-      // Fetch user names for all reports
       Map<String, String> userNames = {};
       List<Map<String, dynamic>> reportDataList = [];
 
@@ -487,7 +460,6 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
         });
       }
 
-      // Create PDF
       final pdf = pw.Document();
 
       pdf.addPage(
@@ -559,23 +531,13 @@ class _ReportScreenState extends State<ReportScreen> with SingleTickerProviderSt
         fileName = "Report_${reportPeriodText}_${startMonth}${startYear}_to_${endMonth}${endYear}.pdf";
       }
 
-      Directory directory;
-      if (Platform.isAndroid) {
-        directory = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
-      } else {
-        directory = await getApplicationDocumentsDirectory();
-      }
-
-      final filePath = "${directory.path}/$fileName";
-      final file = File(filePath);
-      await file.writeAsBytes(await pdf.save());
-
-      await Share.shareXFiles([XFile(filePath)], text: '$reportPeriodText Report');
+      // Use the new function to save and open the file.
+      await _saveAndOpenFile(await pdf.save(), fileName);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('$reportPeriodText report generated and ready to share!'),
+            content: Text('Report saved to Downloads folder and opened.'),
             backgroundColor: Colors.green,
           ),
         );
